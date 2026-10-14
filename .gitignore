@@ -1,0 +1,21 @@
+# --- Secrets / سشن تلگرام (هرگز commit یا داخلِ image نشود) ---
+*.session
+*.session-journal
+.env
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# --- داده‌ی محلیِ JSON (بکاپ/مهاجرت) ---
+notes.json
+autopost.json
+assistant.json
+font_state.json
+stats.json
+
+# --- پلاگین‌های نصب‌شده در زمان اجرا ---
+plugins_installed/

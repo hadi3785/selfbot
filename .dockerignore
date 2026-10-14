@@ -1,0 +1,17 @@
+*.session
+*.session-journal
+.env
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.venv/
+venv/
+notes.json
+autopost.json
+assistant.json
+font_state.json
+stats.json
+plugins_installed/
+.git/
+.gitignore
+tests/
