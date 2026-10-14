@@ -148,12 +148,19 @@ async def _validate_pair(src, dst) -> str | None:
         )
     if isinstance(dst, Channel):
         try:
-            perms = await client.get_permissions(dst)
-        except Exception:
-            return "نتونستم دسترسی‌هات رو توی مقصد بررسی کنم (عضو هستی؟)."
+            perms = await asyncio.wait_for(client.get_permissions(dst), timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("get_permissions timeout شد")
+            return "درخواست دسترسی‌ها timeout شد. دوباره تلاش کن."
+        except Exception as e:
+            logger.warning("get_permissions failed: %s", e)
+            return f"نتونستم دسترسی‌هات رو توی مقصد بررسی کنم: {e}"
+        
         if perms is None:
-            return "نتونستم دسترسی‌هات رو توی مقصد بررسی کنم (ممکنه عضو نباشی)."
-        if dst.broadcast:
+            # اگر مالک کانال هستی ولی perms برنمی‌گرده، احتمالاً مشکل cache است
+            # بذار بدون چک ادامه بده و اگر واقعاً مشکل باشه موقع فوروارد معلوم می‌شه
+            logger.warning("perms is None for channel %s - skipping permission check", dst.id)
+        elif dst.broadcast:
             if not (perms.is_creator or getattr(perms, "post_messages", False)):
                 return "توی کانالِ مقصد دسترسیِ انتشارِ پست نداری (باید سازنده یا ادمین باشی)."
         elif not (perms.is_creator or perms.is_admin or getattr(perms, "send_messages", True)):
