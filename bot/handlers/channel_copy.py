@@ -94,20 +94,39 @@ async def _resolve(kind_value: tuple[str, object] | None, stored_id: int | None,
     if stored_ref and not stored_ref.lstrip("-").isdigit():
         candidates.append(stored_ref)
 
-    for attempt in range(2):
-        for c in candidates:
-            try:
-                return await client.get_entity(c)
-            except (ValueError, TypeError):
-                continue
-            except Exception as e:  # username ناموجود/خصوصی و ...
-                logger.debug("get_entity(%r) failed: %s", c, e)
-                continue
-        if attempt == 0:
-            try:
-                await client.get_dialogs()
-            except Exception:
-                logger.warning("get_dialogs ناموفق بود", exc_info=True)
+    # تلاش اول: مستقیم
+    for c in candidates:
+        try:
+            return await asyncio.wait_for(client.get_entity(c), timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("get_entity(%r) timeout شد", c)
+            continue
+        except (ValueError, TypeError):
+            continue
+        except Exception as e:
+            logger.debug("get_entity(%r) failed: %s", c, e)
+            continue
+    
+    # تلاش دوم: بعد از get_dialogs
+    try:
+        await asyncio.wait_for(client.get_dialogs(), timeout=15)
+    except asyncio.TimeoutError:
+        logger.warning("get_dialogs timeout شد")
+    except Exception:
+        logger.warning("get_dialogs ناموفق بود", exc_info=True)
+    
+    for c in candidates:
+        try:
+            return await asyncio.wait_for(client.get_entity(c), timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("get_entity(%r) timeout شد (دومین تلاش)", c)
+            continue
+        except (ValueError, TypeError):
+            continue
+        except Exception as e:
+            logger.debug("get_entity(%r) failed (دومین تلاش): %s", c, e)
+            continue
+    
     return None
 
 
@@ -393,7 +412,7 @@ async def channel_copy_handler(event):
     if _running_id() is not None:
         return await event.edit("یک کپی در حالِ اجراست؛ همزمان فقط یکی مجازه (وضعیت/توقف).")
 
-    await event.edit("🔎 در حالِ بررسیِ کانال‌ها…")
+    await event.edit("🔎 در حالِ بررسیِ کانال‌ها… (ممکنه تا 30 ثانیه طول بکشه)")
     src = await _resolve(src_ref, None)
     dst = await _resolve(dst_ref, None)
     if src is None:
