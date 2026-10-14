@@ -412,16 +412,34 @@ async def channel_copy_handler(event):
     if _running_id() is not None:
         return await event.edit("یک کپی در حالِ اجراست؛ همزمان فقط یکی مجازه (وضعیت/توقف).")
 
-    await event.edit("🔎 در حالِ بررسیِ کانال‌ها… (ممکنه تا 30 ثانیه طول بکشه)")
-    src = await _resolve(src_ref, None)
-    dst = await _resolve(dst_ref, None)
+    msg = await event.edit("🔎 در حالِ بررسیِ کانال‌ها… (ممکنه تا 30 ثانیه طول بکشه)")
+    
+    try:
+        src = await _resolve(src_ref, None)
+    except Exception as e:
+        logger.exception("خطا در resolve کردن مبدأ")
+        return await msg.edit(f"❌ خطا در پیدا کردن مبدأ: {e}")
+    
     if src is None:
-        return await event.edit("⚠️ کانالِ مبدأ پیدا نشد (باید عضوش باشی یا عمومی باشه).")
+        return await msg.edit("⚠️ کانالِ مبدأ پیدا نشد (باید عضوش باشی یا عمومی باشه).")
+    
+    try:
+        dst = await _resolve(dst_ref, None)
+    except Exception as e:
+        logger.exception("خطا در resolve کردن مقصد")
+        return await msg.edit(f"❌ خطا در پیدا کردن مقصد: {e}")
+    
     if dst is None:
-        return await event.edit("⚠️ کانالِ مقصد پیدا نشد (باید عضوش باشی).")
-    err = await _validate_pair(src, dst)
+        return await msg.edit("⚠️ کانالِ مقصد پیدا نشد (باید عضوش باشی).")
+    
+    try:
+        err = await _validate_pair(src, dst)
+    except Exception as e:
+        logger.exception("خطا در validate_pair")
+        return await msg.edit(f"❌ خطا در بررسی کانال‌ها: {e}")
+    
     if err:
-        return await event.edit(f"⛔ {err}")
+        return await msg.edit(f"⛔ {err}")
 
     total = 0
     try:
