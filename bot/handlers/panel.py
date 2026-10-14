@@ -351,10 +351,24 @@ CATEGORIES = [
             f"`{PREFIX}کار` — 🔥 کارهای باز (Task Manager)",
             f"`{PREFIX}کار افزودن` `<متن>` `-- فردا 18:00` — کارِ جدید با ددلاینِ اختیاری",
             f"`{PREFIX}کارهای امروز` / `{PREFIX}کارهای عقب` / `{PREFIX}کار انجام` `<id>`",
-            f"`{PREFIX}کپی‌کانال شروع` `@مبدا @مقصد` — 📦 فورواردِ همه‌ی پست‌های یک کانال به کانالِ دیگه",
-            f"`{PREFIX}کپی‌کانال وضعیت/توقف/ادامه/لیست` — مدیریتِ کپی (قابلِ ادامه بعد از ری‌استارت)",
             f"`{PREFIX}اتوپایل روشن/خاموش` — 🤖 تحلیلِ خودکارِ پیام‌های خصوصی (مهم/یادآوری/نیاز به پاسخ)",
             f"`{PREFIX}اتوپایل مستثنی` — بی‌خیالِ چتِ فعلی (toggle)",
+        ],
+    },
+    {
+        "key": "channel_copy",
+        "emoji": "📦",
+        "title": "کپی کانال",
+        "commands": [
+            f"`{PREFIX}کپی‌کانال شروع` `@مبدا @مقصد` — فورواردِ همه‌ی پست‌ها (بدونِ برچسب)",
+            f"`{PREFIX}کپی‌کانال شروع` `@مبدا @مقصد از 1200` — از پیامِ خاص",
+            f"`{PREFIX}کپی‌کانال شروع` `@مبدا @مقصد با‌نام` — با برچسبِ Forwarded",
+            f"`{PREFIX}کپی‌کانال وضعیت` — پیشرفت و زمانِ باقی‌مانده",
+            f"`{PREFIX}کپی‌کانال توقف` / `{PREFIX}کپی‌کانال ادامه` — مدیریتِ کپی",
+            f"`{PREFIX}کپی‌کانال لیست` — کارهای اخیر",
+            f"`{PREFIX}کپی‌کانال حذف` `<شماره>` — حذفِ کار",
+            "📊 ~9000 پیام/ساعت • آلبوم‌ها سالم • ذخیره‌ی پیشرفت",
+            "⚠️ مقصد باید ادمین باشی • محتوای محافظت‌شده کپی نمی‌شه",
         ],
     },
     {
@@ -471,7 +485,7 @@ CATEGORIES = [
 # دسته‌های V2 (۹ گروهِ منطقی — «دکمه‌ی کم‌اهمیت در Home دیده نمی‌شود»):
 V2_GROUPS = [
     {"key": "v_ai",         "emoji": "🧠", "title": "هوش مصنوعی",    "cats": ["ai", "ai_memory", "smart_reply", "command_router", "assistant"]},
-    {"key": "v_productive", "emoji": "📥", "title": "بهره‌وری",       "cats": ["inbox", "personal", "scheduler", "notes", "profile"]},
+    {"key": "v_productive", "emoji": "📥", "title": "بهره‌وری",       "cats": ["inbox", "personal", "scheduler", "channel_copy", "notes", "profile"]},
     {"key": "v_tools",      "emoji": "🛠", "title": "ابزارها",        "cats": ["tools", "media", "audio", "global_search", "font", "general"]},
     {"key": "v_auto",       "emoji": "⚡", "title": "اتوماسیون",      "cats": ["automation", "notifications", "autopost", "daily_digest", "message_tracker"]},
     {"key": "v_group",      "emoji": "👮", "title": "مدیریتِ گروه",   "cats": ["admin", "msg", "poll"]},
