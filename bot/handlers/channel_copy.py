@@ -151,6 +151,8 @@ async def _validate_pair(src, dst) -> str | None:
             perms = await client.get_permissions(dst)
         except Exception:
             return "نتونستم دسترسی‌هات رو توی مقصد بررسی کنم (عضو هستی؟)."
+        if perms is None:
+            return "نتونستم دسترسی‌هات رو توی مقصد بررسی کنم (ممکنه عضو نباشی)."
         if dst.broadcast:
             if not (perms.is_creator or getattr(perms, "post_messages", False)):
                 return "توی کانالِ مقصد دسترسیِ انتشارِ پست نداری (باید سازنده یا ادمین باشی)."
