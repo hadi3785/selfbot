@@ -324,6 +324,74 @@ def start_variants(tokens: list[str], *, now: dt.datetime | None = None) -> list
     return [c for _, c in cands]
 
 
+def _split_modifiers(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """
+    توکن‌ها را به (آدرس‌ها, تعدیل‌کننده‌ها) تقسیم می‌کند.
+    تعدیل‌کننده = «از …» (+ مقدار و ساعتِ اختیاری) و «بانام» — با حفظِ ترتیب.
+    """
+    toks = [to_ascii_digits(t) for t in tokens]
+    refs: list[str] = []
+    rest: list[str] = []
+    i = 0
+    while i < len(toks):
+        low = toks[i].lower()
+        if low in _FROM_FLAGS:
+            chunk = toks[i:i + 2]
+            i += 2
+            if i < len(toks) and toks[i].lower() in _TIME_KEYWORDS:
+                chunk.append(toks[i])
+                i += 1
+            if i < len(toks):
+                try:
+                    is_time = parse_time_arg(toks[i]) is not None
+                except ValueError:
+                    is_time = False
+                if is_time:
+                    chunk.append(toks[i])
+                    i += 1
+            rest.extend(chunk)
+            continue
+        if low in _WITH_AUTHOR_FLAGS:
+            rest.append(toks[i])
+            i += 1
+            continue
+        refs.append(toks[i])
+        i += 1
+    return refs, rest
+
+
+def parse_start_any(
+    tokens: list[str], *, now: dt.datetime | None = None
+) -> tuple[str, str, int, dt.datetime | None, bool, list[tuple[str, bool]], bool]:
+    """
+    دستورِ شروع را در هر دو شکلِ پشتیبانی‌شده می‌خواند:
+      • دو آدرس:  ['@مبدا', '@مقصد', 'از', '1403/05/01']
+      • یک آدرس + ریپلای:  ['@مقصد', 'از', '1403/05/01']  ← آدرسِ داده‌شده «مقصد» است و
+        مبدأ از پستِ ریپلای‌شده گرفته می‌شود.
+
+    خروجی: (src_raw, dst_raw, from_id, from_date, drop_author, marks, from_reply)
+      from_reply=True یعنی src_raw خالی است و صداکننده باید مبدأ را از ریپلای بردارد.
+    """
+    first_err: ValueError | None = None
+    try:
+        s, d, fid, fd, da, marks = parse_start_args(list(tokens), now=now)
+        return s, d, fid, fd, da, marks, False
+    except ValueError as e:
+        first_err = e
+
+    refs, rest = _split_modifiers(list(tokens))
+    if len(refs) == 1:
+        # فقط یک آدرس داده شده → همان مقصد است؛ مبدأ از ریپلای
+        _s, _d, fid, fd, da, marks = parse_start_args(["__src__", refs[0]] + rest, now=now)
+        return "", refs[0], fid, fd, da, marks, True
+    if len(refs) == 0:
+        raise ValueError(
+            "آدرسی ندادی. یا آدرسِ مقصد را بده و روی پستِ کانالِ مبدأ ریپلای کن "
+            "(`.کپی‌کانال شروع @مقصد`)، یا هر دو آدرس را بده."
+        )
+    raise first_err
+
+
 # ---------------------------------------------------------- batching ---
 @dataclass
 class Batch:

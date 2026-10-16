@@ -36,7 +36,7 @@ from ..channel_copy_core import (
     format_status,
     iter_batches,
     parse_chat_ref,
-    parse_start_args,
+    parse_start_any,
     ref_label,
     split_ref,
     start_variants,
@@ -61,6 +61,7 @@ _PER_MESSAGE_FALLBACK_DELAY = 3.0
 USAGE = (
     "📦 **کپی کانال**\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد` — از اولین پست\n"
+    f"`{config.PREFIX}کپی‌کانال شروع @مقصد` + **ریپلای روی پستی از کانالِ مبدأ** — بدونِ آدرسِ مبدأ\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد از 1200` — از پیامِ 1200 به بعد\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد از 1403/05/01` — از تاریخِ شمسی به بعد\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد از 2024-08-22 ساعت 10:30` — تاریخِ میلادی + ساعت\n"
@@ -73,6 +74,7 @@ USAGE = (
     f"`{config.PREFIX}کپی‌کانال پیدا اخبار` — جستجو بینِ همه‌ی چت‌هات (کانالِ خصوصی هم میاد)\n"
     f"`{config.PREFIX}کپی‌کانال ذخیره اخبار @ch` — اسمِ دلخواه برای یک کانال\n"
     f"`{config.PREFIX}کپی‌کانال شروع` + **ریپلای** روی پیامِ همون کانال → مبدأ همون کانال می‌شه\n"
+    f"`{config.PREFIX}کپی‌کانال شروع @مقصد` + ریپلای → ‌آدرسِ داده‌شده مقصده و مبدأ از پستِ ریپلای‌شده\n"
     f"`{config.PREFIX}کپی‌کانال پوشه‌ها` — لیستِ پوشه‌ها و شماره‌شون\n\n"
     f"`{config.PREFIX}کپی‌کانال وضعیت` | `توقف` | `ادامه [شماره]` | `لیست` | `حذف <شماره>`\n\n"
     "• مقصد باید کانالی باشه که توش ادمین (با دسترسیِ انتشار) هستی.\n"
@@ -806,23 +808,45 @@ async def _resolve_start_pair(src_raw: str, dst_raw: str, reply):
     src_specs = [s for s in re.split(r"[,\u060c]+", src_raw) if s.strip()]
     if not src_specs:
         return [], None, "مبدأ خالیه."
+    reply_mode = src_specs == ["__reply__"]
 
     dst = None
-    saved_dst = await repo.get_target(dst_raw)
-    if saved_dst is not None:
-        dst = await _resolve_source_by_id(int(saved_dst["chat_id"]))
+    if not dst_raw:
+        # مقصد از ریپلای: پستی که داخلِ خودِ کانالِ مقصد نوشته شده (کانالِ خصوصی)
+        peer = getattr(reply, "peer_id", None) if reply is not None else None
+        inner = getattr(peer, "channel_id", None) or getattr(peer, "chat_id", None)
+        if inner:
+            dst = await _resolve_source_by_id(int(f"-100{inner}")) or await _resolve_source_by_id(int(inner))
+        if dst is None:
+            return [], None, (
+                "مقصد پیدا نشد: آدرسِ مقصد را بده، یا روی پستی که **داخلِ کانالِ مقصد** نوشته شده ریپلای کن."
+            )
     else:
-        try:
-            dst_ref = parse_chat_ref(dst_raw)
-        except ValueError as e:
-            return [], None, f"مقصد: {e}"
-        dst = await _resolve(dst_ref, None, dst_raw)
-    if dst is None:
-        return [], None, "کانالِ مقصد پیدا نشد (باید عضوش باشی)."
+        saved_dst = await repo.get_target(dst_raw)
+        if saved_dst is not None:
+            dst = await _resolve_source_by_id(int(saved_dst["chat_id"]))
+        else:
+            try:
+                dst_ref = parse_chat_ref(dst_raw)
+            except ValueError as e:
+                return [], None, f"مقصد: {e}"
+            dst = await _resolve(dst_ref, None, dst_raw)
+        if dst is None:
+            return [], None, "کانالِ مقصد پیدا نشد (باید عضوش باشی)."
 
     resolved: list[tuple[object, str]] = []
     for spec in src_specs:
         spec = spec.strip()
+        if reply_mode:
+            # مبدأ = همان کانالی که پستِ ریپلای‌شده ازش آمده (یا لینکِ داخلش)
+            ent = await _channel_from_reply(reply)
+            if ent is None:
+                return [], None, (
+                    "مبدأ پیدا نشد: روی یک پست از **کانالِ مبدأ** ریپلای کن، یا آدرسش را بده "
+                    "(`.کپی‌کانال شروع @مبدأ @مقصد`)."
+                )
+            resolved.append((ent, str(tl_utils.get_peer_id(ent))))
+            continue
         # «پوشه:N» / «پوشه:اسم» / «folder:N» → همه‌ی کانال/گروه‌های اون پوشه
         m = re.fullmatch(r"(?:پوشه|folder)\s*[:：]\s*(.+)", spec, re.IGNORECASE)
         if m:
@@ -1147,14 +1171,25 @@ async def channel_copy_handler(event):
     from_id, from_date, drop_author = 0, None, True
     for cand in cands:
         try:
-            src_raw, dst_raw, from_id, from_date, drop_author, marks = parse_start_args(list(cand))
+            (src_raw, dst_raw, from_id, from_date, drop_author, marks, from_reply) = parse_start_any(list(cand))
         except ValueError as e:
             last_err = str(e)
             continue
         if msg is None:
             msg = await event.edit("🔎 دارم کانال‌ها رو بررسی می‌کنم… (ممکنه تا ۳۰ ثانیه طول بکشه)")
+        if from_reply and reply is None:
+            # دستور یک آدرس داره ولی ریپلایی نیست؛ هیچ کاندید دیگه‌ای معنی نداره
+            return await event.edit(
+                "⚠️ این دستور یک آدرس داره (پس همان «مقصد» است) و باید روی یک پست از **کانالِ مبدأ** "
+                "ریپلای کنی.\n"
+                f"یا هر دو آدرس را بده: `{config.PREFIX}کپی‌کانال شروع @مبدأ @مقصد`"
+            )
         try:
-            pair = await _resolve_start_pair(src_raw, dst_raw, reply)
+            if from_reply:
+                # «شروع @مقصد» + ریپلای: آدرسِ داده‌شده مقصد است، مبدأ از پستِ ریپلای‌شده
+                pair = await _resolve_start_pair("__reply__", dst_raw, reply)
+            else:
+                pair = await _resolve_start_pair(src_raw, dst_raw, reply)
         except Exception as e:
             logger.exception("خطا در resolve کردنِ کانال‌ها")
             return await msg.edit(f"❌ خطا در پیدا کردنِ کانال‌ها: {e}")

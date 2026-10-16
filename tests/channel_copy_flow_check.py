@@ -395,6 +395,55 @@ async def main():
     results.append(check("مبدأ از لینکِ خصوصیِ داخلِ متنِ ریپلای",
                          len(fake.forwarded) == 3, f"{out[:70]!r} | {len(fake.forwarded)}"))
 
+
+    await drain()
+    # ۱۰) سناریویِ گزارش‌شده‌ی کاربر: ریپلای روی پستِ کانالِ خصوصی + «شروع @مقصد» (یک آدرس)
+    fake = new_fake({1234567890: 4, 7777777777: 4, 5555555555: 0, 4444444444: 0})
+    cc.client = fake
+    fake.forwarded.clear()
+    post = NS(id=3, peer_id=NS(channel_id=1234567890, user_id=None),
+              fwd_from=NS(channel_post=3), message="پستِ کانال", entities=[], get_sender=None)
+
+    async def _sender():
+        return fake.entities[1234567890]
+    post.get_sender = _sender
+    out = await run_cmd(fake, "شروع @my_dest", reply=post)
+    await wait_jobs()
+    results.append(check("ریپلای روی پستِ کانال خصوصی + «شروع @مقصد» شروع می‌شود",
+                         "شروع شد" in out and len(fake.forwarded) == 4,
+                         f"{out[:90]!r} | {len(fake.forwarded)}"))
+    job = (await repo.list_jobs(1))[0]
+    results.append(check("مبدأ همان کانالِ ریپلای‌شده ثبت شده",
+                         job["source_id"] == -1001234567890 and job["dest_id"] == -1005555555555,
+                         f"{job['source_id']} → {job['dest_id']}"))
+
+    # «از <تاریخِ محلی>» با مبدأِ ریپلای: 05:00 به وقتِ تهران = 01:30 UTC → از پیامِ ۲
+    fake.forwarded.clear()
+    out = await run_cmd(fake, "شروع @my_dest از 2024-01-01 05:00", reply=post)
+    await wait_jobs()
+    results.append(check("«شروع @مقصد از <تاریخ>» + ریپلای → از همان تاریخ کپی می‌کند",
+                         "شروع شد" in out and sorted(i for _, i in fake.forwarded) == [2, 3, 4],
+                         f"{out[:80]!r} | {sorted(i for _, i in fake.forwarded)}"))
+
+    # بدونِ ریپلای و با یک آدرس → خطای راهنما (نه فقط راهنما)
+    await drain()
+    out = await run_cmd(fake, "شروع @my_dest", reply=None)
+    results.append(check("یک آدرس بدونِ ریپلای → پیامِ راهنما",
+                         "ریپلای" in out and "شروع شد" not in out, out))
+
+    # با تاریخ و مبدأِ ریپلای (از پیامِ ۳ به بعد) و مقصد از ریپلای‌داخلِ کانالِ مقصد
+    fake.forwarded.clear()
+    in_dest = NS(id=1, peer_id=NS(channel_id=5555555555, user_id=None),
+                 fwd_from=None, message="", entities=[], get_sender=None)
+    async def _gs3():
+        return fake.entities[5555555555]
+    in_dest.get_sender = _gs3
+    out = await run_cmd(fake, "شروع از 2024-01-01 03:00", reply=post)
+    await wait_jobs()
+    results.append(check("«شروع از <تاریخ>» بدونِ مقصد + ریپلایداخلِکانالِمقصد → راهنمای مقصد",
+                         "مقصد" in out, f"{out[:110]!r}"))
+    await drain()
+
     # ۹) مبدأ لینکِ دعوتِ خصوصی (بدونِ عضویت): باید پیامِ راهنما بده
     out = await run_cmd(fake, "شروع +AbCdEf123 مقصد")
     results.append(check("لینکِ دعوتِ خصوصی → راهنما (عضو شو یا ریپلای)",

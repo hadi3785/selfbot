@@ -93,6 +93,37 @@ def test_parse_start_args():
         raise AssertionError(bad)
 
 
+def test_parse_start_any():
+    now = dt.datetime(2026, 10, 15, 12, 0)
+    # دو آدرس (مثلِ قبل)
+    assert core.parse_start_any(["@src", "@dst"], now=now) == (
+        "@src", "@dst", 0, None, True, [], False
+    )
+    # یک آدرس + ریپلای: همان آدرس مقصد است و مبدأ از ریپلای می‌آید
+    assert core.parse_start_any(["@gs6378g"], now=now) == (
+        "", "@gs6378g", 0, None, True, [], True
+    )
+    assert core.parse_start_any(["@dst", "از", "1403/05/01"], now=now) == (
+        "", "@dst", 0, dt.datetime(2024, 7, 22), True, [("date", True)], True
+    )
+    assert core.parse_start_any(["@dst", "از", "1403/05/01", "ساعت", "10:30"], now=now)[3] == dt.datetime(
+        2024, 7, 22, 10, 30
+    )
+    assert core.parse_start_any(["@dst", "از", "500"], now=now)[2] == 499
+    # «ازاینبعد» قبل از پارس توسطِ هندلر جدا می‌شود (توکنِ watch)؛ اینجا حالتِ جدا‌شده:
+    assert core.parse_start_any(["@dst"], now=now)[6] is True
+    assert core.parse_start_any(["@dst", "با‌نام"], now=now) == (
+        "", "@dst", 0, None, False, [], True
+    )
+    # خرابی‌ها
+    for bad in ([], ["@a", "@b", "@c"], ["@dst", "از"], ["@dst", "از", "x"]):
+        try:
+            core.parse_start_any(bad, now=now)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+
+
 def test_split_ref_and_labels():
     assert core.split_ref("@ch/12345") == ("@ch", 12345)
     assert core.split_ref("t.me/ch/9") == ("t.me/ch", 9)
