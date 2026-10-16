@@ -281,6 +281,7 @@ docker run --env-file .env telegram-selfbot
 | `CHANNEL_COPY_BATCH_SIZE` | `20` | تعدادِ پیام در هر درخواستِ فوروارد در `.کپی‌کانال` (سقفِ تلگرام ۱۰۰) |
 | `CHANNEL_COPY_DELAY_SECONDS` | `8` | مکثِ بینِ دو دسته‌ی فوروارد (حداقل ۳) |
 | `CHANNEL_COPY_DAILY_LIMIT` | `0` | سقفِ اختیاریِ پیامِ کپی‌شده در هر ۲۴ ساعت (۰ = بدونِ سقف) |
+| `CHANNEL_COPY_WATCH_SECONDS` | `60` | فاصله‌ی چک‌کردنِ پیام‌هایِ تازه در حالتِ «از این به بعد» (حداقل ۳۰) |
 | `BACKUP_MAX_MESSAGES` / `BACKUP_MAX_MEDIA` | `2000` / `50` | سقفِ بکاپ‌گیری |
 | `NOTES_FILE` / `AUTOPOST_FILE` / `ASSISTANT_FILE` / `FONT_STATE_FILE` / `STATS_FILE` | `*.json` | فقط برای اسکریپتِ مهاجرت و Import/Export دستیِ بکاپ - دیگه در زمانِ اجرا استفاده نمی‌شن |
 

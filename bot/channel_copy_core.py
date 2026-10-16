@@ -28,11 +28,33 @@ _USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 _TME_RE = re.compile(r"^(?:https?://)?(?:www\.)?(?:t|telegram)\.me/(.+)$", re.IGNORECASE)
 
 
+def split_ref(raw: str) -> tuple[str, int]:
+    """
+    «@channel/12345» → ("@channel", 12345). شماره‌ی پیامِ چسبیده به آدرس جدا می‌شه
+    تا بشه اولِ کپیِ یک کانال رو دقیق مشخّص کرد.
+    بعد از اسلشِ آخر فقط اگه همه‌ی کاراکترها رقم باشن (ارقامِ فارسی هم می‌شن).
+    ⚠️ «t.me/c/<شناسه>» و «t.me/c/<شناسه>/<شماره>» دست‌نخورده می‌مونن: اونجا عدد
+    خودِ شناسه‌ی کانالِ خصوصیه، نه شماره‌ی پیام.
+    """
+    s = to_ascii_digits((raw or "").strip())
+    m = re.search(r"/c/(\d+)(?:/(\d+))?$", s)
+    if m:
+        # لینکِ کانالِ خصوصی: شناسه‌ی کانال دست‌نخورده می‌مونه، فقط شماره‌ی پیامِ آخر جدا می‌شه
+        return s[: m.end(1)], int(m.group(2) or 0)
+    if "/" not in s:
+        return s, 0
+    head, _, tail = s.rpartition("/")
+    if not head or not tail.isdigit():
+        return s, 0
+    return head, int(tail)
+
+
 def parse_chat_ref(raw: str) -> tuple[str, Any]:
     """
     ورودیِ کاربر برای مبدأ/مقصد → ("username", str) یا ("id", int).
     پشتیبانی: @user ، user ، t.me/user ، t.me/user/123 ، t.me/c/<id>/<msg> ،
-    شناسه‌ی عددی (‎-100…‎ یا بدونِ پیشوند). لینکِ دعوتِ خصوصی (t.me/+…) قابلِ
+    شناسه‌ی عددی (‎-100…‎ یا بدونِ پیشوند)، و «@user/123» (شماره‌ی پیامِ چسبیده —
+    با split_ref جدا می‌شه). لینکِ دعوتِ خصوصی (t.me/+…) قابلِ
     استفاده نیست چون بدونِ عضویت entity نمی‌ده → ValueError با راهنما.
     """
     s = (raw or "").strip().strip("<>").strip()
@@ -180,9 +202,9 @@ def parse_time_arg(raw: str) -> tuple[int, int, int] | None:
 
 def parse_start_args(
     tokens: list[str], *, now: dt.datetime | None = None
-) -> tuple[str, str, int, dt.datetime | None, bool]:
+) -> tuple[str, str, int, dt.datetime | None, bool, list[tuple[str, bool]]]:
     """
-    ['@src', '@dst', 'از', '1403/05/01'] → (src_raw, dst_raw, from_id, from_date, drop_author)
+    ['@src', '@dst', 'از', '1403/05/01'] → (src_raw, dst_raw, from_id, from_date, drop_author, marks)
 
     «از …» دو جور قبول می‌کنیم:
       • شماره‌ی پیام: «از 1200» → from_id=1199 (min_id انحصاریه؛ خودِ ۱۲۰۰ هم کپی می‌شه)
@@ -191,6 +213,10 @@ def parse_start_args(
         («از 1403/05/01 ساعت 10:30»)
         → from_date: datetimeِ «بدونِ tz» به وقتِ کاربر؛ تبدیلِ به UTC با
           TIMEZONE_OFFSET به عهده‌ی صداکننده‌ست.
+
+    marks: فهرستِ همه‌ی «از …»ها به ترتیبِ ˈ('date', True) | ('id', False)ˈ —
+    وقتی «از تاریخ» و «از شماره» هر دو داده شده باشن، کپیِ یک کانال هم‌زمان از
+    تاریخ و از شماره شروع می‌شه (هر کدوم جدیدتر بود)؛ ربات این رو نشان می‌ده.
 
     drop_author=True یعنی بدونِ برچسبِ «Forwarded from» (کپیِ تمیز - پیش‌فرض).
     now: مبنا برای «امروز/دیروز» (بدونِ tz، به وقتِ کاربر).
@@ -203,7 +229,7 @@ def parse_start_args(
     from_id = 0
     from_date: dt.datetime | None = None
     drop_author = True
-    got_id = False
+    marks: list[tuple[str, bool]] = []
     i = 0
     while i < len(tokens):
         t = tokens[i]
@@ -213,8 +239,6 @@ def parse_start_args(
                 raise ValueError("بعد از «از» باید تاریخ (مثل 1403/05/01) یا شماره‌ی پیام بیاد.")
             val = tokens[i + 1]
             i += 2
-            if from_date is not None:
-                raise ValueError("دو بار «از …» زدی؛ فقط یکی رو مشخص کن (تاریخ یا شماره‌ی پیام).")
 
             day: dt.date | None = None
             hh = mm = ss = 0
@@ -229,10 +253,8 @@ def parse_start_args(
                         hh, mm, ss = t_only
                         day = now.date()
                     elif val.isdigit():
-                        if got_id:
-                            raise ValueError("دو بار «از …» زدی؛ فقط یکی رو مشخص کن.")
-                        from_id = max(int(val) - 1, 0)  # min_id انحصاریه؛ «از N» یعنی خودِ N هم کپی بشه
-                        got_id = True
+                        from_id = int(val) - 1  # min_id انحصاریه؛ «از N» یعنی خودِ N هم کپی بشه
+                        marks.append(("id", False))
                         continue
                     else:
                         raise ValueError(
@@ -247,9 +269,9 @@ def parse_start_args(
                 if t_only is not None:
                     hh, mm, ss = t_only
                     i += 1
-            if got_id:
-                raise ValueError("هم شماره‌ی پیام و هم تاریخ دادی؛ فقط یکی رو مشخص کن.")
-            from_date = dt.datetime(day.year, day.month, day.day, hh, mm, ss)
+            cand = dt.datetime(day.year, day.month, day.day, hh, mm, ss)
+            from_date = cand if from_date is None else max(from_date, cand)
+            marks.append(("date", True))
             continue
         if low in _WITH_AUTHOR_FLAGS:
             drop_author = False
@@ -259,7 +281,47 @@ def parse_start_args(
         i += 1
     if len(refs) != 2:
         raise ValueError("باید دقیقاً دو آدرس بدی: مبدأ و مقصد")
-    return refs[0], refs[1], from_id, from_date, drop_author
+    # شماتیکِ «آدرس/شماره‌ی پیام»: اگر آدرسِ مبدأ اینو داشته باشه، شماره ش شروع می‌شه
+    refs[0], embedded = split_ref(refs[0])
+    if embedded:
+        from_id = max(from_id, embedded - 1)
+        marks.append(("id", False))
+    return refs[0], refs[1], max(from_id, 0), from_date, drop_author, marks
+
+
+def start_variants(tokens: list[str], *, now: dt.datetime | None = None) -> list[list[str]]:
+    """
+    راه‌های ممکنِ جدا‌کردنِ مبدأ/مقصد وقتی اسمِ کانال فاصله داره
+    («اخبار مهم» → دو تیکه). هر کاندید رو با parse_start_args امتحان می‌کنیم و
+    فقط اونایی که درست پارس می‌شن رو برمی‌گردونیم، به ترتیبِ کم‌ترین چسباندن:
+      ۱) بدونِ چسباندن  ۲) فقط یک طرف چسبیده  ۳) هر دو طرف چسبیده
+    توکن‌های خودمون (از / بانام / ساعت / …) توی گروهِ سوم می‌مونن.
+    """
+    tokens = [to_ascii_digits(t) for t in tokens]
+    if len(tokens) < 2:
+        return []
+    cands: list[tuple[int, list[str]]] = []
+    seen: set[tuple[str, ...]] = set()
+    n = len(tokens)
+    for a in range(1, n):
+        for b in range(a, n + 1):
+            head = " ".join(tokens[:a]).strip()
+            mid = " ".join(tokens[a:b]).strip()
+            tail = tokens[b:]
+            if not head or not mid:
+                continue
+            cand = [head, mid] + list(tail)
+            key = tuple(cand)
+            if key in seen:
+                continue
+            try:
+                parse_start_args(list(cand), now=now)
+            except ValueError:
+                continue
+            seen.add(key)
+            cands.append(((a - 1) + (b - a - 1), cand))
+    cands.sort(key=lambda x: x[0])
+    return [c for _, c in cands]
 
 
 # ---------------------------------------------------------- batching ---
@@ -465,6 +527,100 @@ async def find_start_id(fetch, low: int, high: int, target: dt.datetime) -> int 
     return U
 
 
+# ------------------------------------------------- private chat links ---
+UID_OFFSET = 4_000_000_000   # ارجاعِ ساختگی برای پوشه‌ها (جدا از شناسه‌های واقعیِ چت)
+FOLDER_MAX = 255             # تلگرام برای پوشه‌ها فقط ۰..۲۵۵ می‌پذیره
+
+_LINK_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:t|telegram)\.me/([A-Za-z0-9_+\-/]+)", re.IGNORECASE
+)
+
+
+def _classify_link(tail: str) -> dict | None:
+    """«+hash» / «joinchat/hash» / «c/123/45» / «user/45» → دیکشنریِ لینک یا None."""
+    tail = tail.strip("/")
+    if not tail:
+        return None
+    m = re.fullmatch(r"\+([A-Za-z0-9_-]+)", tail)
+    if m:
+        return {"kind": "invite", "hash": m.group(1), "ref": f"https://t.me/+{m.group(1)}",
+                "message_id": 0, "name": ""}
+    m = re.fullmatch(r"joinchat/([A-Za-z0-9_-]+)", tail, re.IGNORECASE)
+    if m:
+        return {"kind": "invite", "hash": m.group(1), "ref": f"https://t.me/joinchat/{m.group(1)}",
+                "message_id": 0, "name": ""}
+    m = re.fullmatch(r"c/(\d+)(?:/(\d+))?", tail)
+    if m:
+        return {"kind": "private", "hash": "", "ref": f"t.me/c/{m.group(1)}",
+                "message_id": int(m.group(2) or 0), "name": ""}
+    m = re.fullmatch(r"([A-Za-z][A-Za-z0-9_]{3,31})(?:/(\d+))?", tail)
+    if m:
+        return {"kind": "public", "hash": "", "ref": f"@{m.group(1)}",
+                "message_id": int(m.group(2) or 0), "name": ""}
+    return None
+
+
+def extract_protected_links(text: str | None, entities: list | None = None) -> list[dict]:
+    """
+    لینک‌های کانال/گروهی که توی متنِ یک پیام هستن → فهرستِ لینک‌ها.
+
+    سه جور لینک تشخیص داده می‌شه:
+      • «private»  → t.me/c/<شناسه>/<شماره>  (کانالِ خصوصی؛ برایِ پیدا کردنِ خودِ کانال)
+      • «invite»   → t.me/+hash و t.me/joinchat/hash  (لینکِ دعوتِ خصوصی)
+      • «public»   → t.me/<یوزرنیم>/<شماره>
+
+    لینک‌های «متنِ دلخواه → آدرس» (MessageEntityTextUrl) هم خونده می‌شن، چون
+    خیلی از کانال‌ها اسمِ کانالِ بعدی رو به‌صورتِ لینک می‌ذارن.
+
+    خروجی: [{"kind", "hash", "ref", "message_id", "name"}]
+      ref  → قابلِ دادنِ مستقیم به parse_chat_ref (برایِ invite با joinchat سرچ می‌شه)
+      name → متنِ قابلِ نمایشِ لینک (وقتی لینک رویِ یک اسم نشسته باشه)
+    """
+    text = text or ""
+    found: list[dict] = []
+    seen: set[tuple[str, str, int]] = set()
+
+    def push(item: dict | None, name: str = "") -> None:
+        if not item:
+            return
+        item["name"] = name
+        key = (item["kind"], item["hash"] or item["ref"], item["message_id"])
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(item)
+
+    name_by_url: dict[str, str] = {}
+    for ent in entities or []:
+        cls = ent.__class__.__name__
+        url = getattr(ent, "url", None)
+        if cls in ("MessageEntityTextUrl", "MessageEntityUrl") and url:
+            name_by_url[url] = text[ent.offset:ent.offset + ent.length]
+        elif cls == "MessageEntityUrl":
+            name_by_url[text[ent.offset:ent.offset + ent.length]] = ""
+    for ent in entities or []:
+        url = getattr(ent, "url", None) or ""
+        if not url:
+            continue
+        m = _LINK_RE.search(url)
+        if m:
+            push(_classify_link(m.group(1)), text[ent.offset:ent.offset + ent.length])
+
+    for m in _LINK_RE.finditer(text):
+        label = name_by_url.get(m.group(0), "")
+        push(_classify_link(m.group(1)), label)
+    return found
+
+
+def ref_label(ref: str) -> str:
+    """برچسبِ کوتاهِ یک ارجاع (پوشه/آیدی/یوزرنیم) برای پیام‌های ربات."""
+    s = (ref or "").strip()
+    if s.startswith("folder:"):
+        n = s.split(":", 1)[1]
+        return f"پوشه‌ی شماره {n}" if n != "0" else "چت‌های اصلی (بدونِ پوشه)"
+    return s
+
+
 # ------------------------------------------------------ error classes ---
 _WAIT_ERRORS = {"FloodWaitError", "SlowModeWaitError", "FloodPremiumWaitError"}
 
@@ -551,6 +707,7 @@ STATUS_LABELS = {
     "running": "در حال اجرا ▶️",
     "paused": "متوقف ⏸",
     "done": "تمام‌شده ✅",
+    "watching": "از این به بعد خودکار 👀",
     "error": "خطا ❌",
 }
 
@@ -594,6 +751,11 @@ def format_status(job: dict, live: dict | None = None) -> str:
     ]
     if job.get("from_date"):
         lines.append(f"• شروع از تاریخ: {format_from_date(job['from_date'])}")
+    if job.get("watch"):
+        lines.append("• حالتِ «از این به بعد»: پیام‌های تازه هم خودکار کپی می‌شن 👀")
+    if job.get("children"):
+        kids = len([x for x in str(job["children"]).split(",") if x.strip().isdigit()])
+        lines.append(f"• چند کانال با هم ({kids} کانالِ مبدأ)")
     if total > 0:
         pct = min(int((copied + skipped) * 100 / total), 100)
         lines.append(f"• پیشرفت: {copied} کپی‌شده از حدودِ {total} ({pct}%)")

@@ -206,3 +206,5 @@ GROUP_SPAM_WARN_COOLDOWN_SECONDS = int(os.getenv("GROUP_SPAM_WARN_COOLDOWN_SECON
 CHANNEL_COPY_BATCH_SIZE = max(min(int(os.getenv("CHANNEL_COPY_BATCH_SIZE", "20")), 100), 1)
 CHANNEL_COPY_DELAY_SECONDS = max(float(os.getenv("CHANNEL_COPY_DELAY_SECONDS", "8")), 3.0)
 CHANNEL_COPY_DAILY_LIMIT = max(int(os.getenv("CHANNEL_COPY_DAILY_LIMIT", "0")), 0)
+# فاصله‌ی چک‌کردنِ پیام‌هایِ تازه در حالتِ «از این به بعد» (ثانیه، حداقل ۳۰)
+CHANNEL_COPY_WATCH_SECONDS = max(float(os.getenv("CHANNEL_COPY_WATCH_SECONDS", "60")), 30.0)

@@ -4,7 +4,7 @@ import datetime as dt
 from sqlalchemy import delete, select, update
 
 from ..db.engine import session_scope
-from ..db.models_ext import ChannelCopyJob
+from ..db.models_ext import ChannelCopyJob, ChannelCopyTarget
 
 
 def _to_dict(r: ChannelCopyJob) -> dict:
@@ -25,8 +25,35 @@ def _to_dict(r: ChannelCopyJob) -> dict:
         "window_start": r.window_start,
         "window_count": r.window_count,
         "from_date": r.from_date,
+        "watch": r.watch,
+        "children": r.children,
         "last_error": r.last_error,
     }
+
+
+async def set_job_meta(job_id: int, *, children: str | None = None, note: str = "") -> None:
+    """تنظیمِ ستونِ children (شناسه‌ی کارهای فرزندِ یک کارِ سازمان‌دهنده)."""
+    from sqlalchemy import update as _update
+
+    async with session_scope() as session:
+        await session.execute(
+            _update(ChannelCopyJob).where(ChannelCopyJob.id == job_id).values(children=children or "")
+        )
+
+
+async def list_children(job_id: int) -> list[dict]:
+    """کارهای فرزندِ یک کارِ سازمان‌دهنده."""
+    async with session_scope() as session:
+        parent = await session.get(ChannelCopyJob, job_id)
+        if parent is None or not parent.children:
+            return []
+        ids = [int(x) for x in parent.children.split(",") if x.strip().isdigit()]
+        if not ids:
+            return []
+        rows = (
+            await session.execute(select(ChannelCopyJob).where(ChannelCopyJob.id.in_(ids)))
+        ).scalars().all()
+        return [_to_dict(r) for r in rows]
 
 
 async def create_job(
@@ -41,6 +68,7 @@ async def create_job(
     total_hint: int = 0,
     drop_author: bool = True,
     from_date: dt.datetime | None = None,
+    watch: bool = False,
 ) -> dict:
     async with session_scope() as session:
         obj = ChannelCopyJob(
@@ -54,6 +82,7 @@ async def create_job(
             total_hint=total_hint,
             drop_author=drop_author,
             from_date=from_date,
+            watch=watch,
             status="running",
         )
         session.add(obj)
@@ -139,3 +168,65 @@ async def delete_job(job_id: int) -> bool:
     async with session_scope() as session:
         res = await session.execute(delete(ChannelCopyJob).where(ChannelCopyJob.id == job_id))
         return bool(res.rowcount)
+
+
+# --------------------------------------------------- نام‌های مقصد ---
+def _target_dict(r: ChannelCopyTarget) -> dict:
+    return {"id": r.id, "name": r.name, "chat_id": r.chat_id, "title": r.title}
+
+
+async def save_target(name: str, chat_id: int, title: str = "") -> dict:
+    """اسم → کانال (اسمِ تکراری، آدرسش به‌روز می‌شه)."""
+    name = (name or "").strip()
+    async with session_scope() as session:
+        r = (
+            await session.execute(select(ChannelCopyTarget).where(ChannelCopyTarget.name == name))
+        ).scalar_one_or_none()
+        if r is None:
+            r = ChannelCopyTarget(name=name, chat_id=chat_id, title=title)
+            session.add(r)
+        else:
+            r.chat_id, r.title = chat_id, title
+        await session.flush()
+        return _target_dict(r)
+
+
+async def get_target(name: str) -> dict | None:
+    name = (name or "").strip()
+    async with session_scope() as session:
+        r = (
+            await session.execute(select(ChannelCopyTarget).where(ChannelCopyTarget.name == name))
+        ).scalar_one_or_none()
+        return _target_dict(r) if r else None
+
+
+async def list_targets() -> list[dict]:
+    async with session_scope() as session:
+        rows = (
+            await session.execute(select(ChannelCopyTarget).order_by(ChannelCopyTarget.name))
+        ).scalars().all()
+        return [_target_dict(r) for r in rows]
+
+
+async def delete_target(name: str) -> bool:
+    name = (name or "").strip()
+    async with session_scope() as session:
+        res = await session.execute(delete(ChannelCopyTarget).where(ChannelCopyTarget.name == name))
+        return bool(res.rowcount)
+
+
+async def last_progress(source_id: int, dest_id: int) -> tuple[int, int | None]:
+    """(last_id, from_date-ish) از جدیدترین کارِ همین جفت‌کانال — برای ادامه‌ی خودکار."""
+    async with session_scope() as session:
+        r = (
+            await session.execute(
+                select(ChannelCopyJob)
+                .where(
+                    ChannelCopyJob.source_id == source_id,
+                    ChannelCopyJob.dest_id == dest_id,
+                )
+                .order_by(ChannelCopyJob.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return (r.last_id, r.id) if r else (0, None)

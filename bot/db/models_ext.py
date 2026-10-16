@@ -448,6 +448,21 @@ class TaskItem(Base):
 
 
 # ------------------------------------------------------ Channel Copy ---
+class ChannelCopyTarget(Base):
+    """اسمِ دلخواه برای یک کانالِ مقصد («ذخیره» توی `.کپی‌کانال`) — برای وقتی که آیدی نداریم."""
+
+    __tablename__ = "channel_copy_targets"
+    __table_args__ = (Index("ix_channel_copy_targets_name", "name", unique=True),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ChannelCopyJob(Base):
     """کارِ «کپی کانال» (`.کپی‌کانال`): پیشرفت ذخیره می‌شه تا بعد از ری‌استارت ادامه پیدا کنه."""
 
@@ -474,6 +489,10 @@ class ChannelCopyJob(Base):
     window_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # تاریخِ شروعِ خواسته‌شده («از 1403/05/01»): datetimeِ بدونِ tz به وقتِ کاربر — فقط برایِ نمایش
     from_date: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # «از این به بعد»: بعد از رسیدن به آخرِ مبدأ، منتظرِ پیام‌هایِ تازه می‌مونه و خودکار کپی می‌کنه
+    watch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # کارِ «سازمان‌دهنده»: شناسه‌ی کارهای فرزند (با کاما) — برایِ کپیِ هم‌زمانِ چند کانال
+    children: Mapped[str] = mapped_column(Text, nullable=False, default="")
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

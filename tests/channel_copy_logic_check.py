@@ -45,32 +45,38 @@ def test_parse_chat_ref():
 
 def test_parse_start_args():
     now = dt.datetime(2026, 10, 15, 12, 0)
-    assert core.parse_start_args(["@a", "@b"]) == ("@a", "@b", 0, None, True)
-    assert core.parse_start_args(["@a", "@b", "از", "100"]) == ("@a", "@b", 99, None, True)
-    assert core.parse_start_args(["@a", "@b", "با‌نام"]) == ("@a", "@b", 0, None, False)
-    assert core.parse_start_args(["@a", "@b", "بانام", "from", "5"]) == ("@a", "@b", 4, None, False)
+
+    def p(toks):
+        return core.parse_start_args(list(toks), now=now)
+
+    assert p(["@a", "@b"]) == ("@a", "@b", 0, None, True, [])
+    assert p(["@a", "@b", "از", "100"]) == ("@a", "@b", 99, None, True, [("id", False)])
+    assert p(["@a", "@b", "با‌نام"]) == ("@a", "@b", 0, None, False, [])
+    assert p(["@a", "@b", "بانام", "from", "5"]) == ("@a", "@b", 4, None, False, [("id", False)])
     # شروع با تاریخ (بدونِ tz = به وقتِ کاربر)
-    assert core.parse_start_args(["@a", "@b", "از", "1403/05/01"]) == (
-        "@a", "@b", 0, dt.datetime(2024, 7, 22), True
+    assert p(["@a", "@b", "از", "1403/05/01"]) == (
+        "@a", "@b", 0, dt.datetime(2024, 7, 22), True, [("date", True)]
     )
-    assert core.parse_start_args(["@a", "@b", "از", "2024-08-22"]) == (
-        "@a", "@b", 0, dt.datetime(2024, 8, 22), True
+    assert p(["@a", "@b", "از", "2024-08-22"]) == (
+        "@a", "@b", 0, dt.datetime(2024, 8, 22), True, [("date", True)]
     )
-    assert core.parse_start_args(["@a", "@b", "از", "۱۴۰۳/۰۵/۰۱"])[3] == dt.datetime(2024, 7, 22)
-    assert core.parse_start_args(["@a", "@b", "از", "14030501"])[3] == dt.datetime(2024, 7, 22)
-    assert core.parse_start_args(["@a", "@b", "از", "1403/05/01", "10:30"])[3] == dt.datetime(
-        2024, 7, 22, 10, 30
-    )
-    assert core.parse_start_args(["@a", "@b", "از", "1403/05/01", "ساعت", "9:05"])[3] == dt.datetime(
-        2024, 7, 22, 9, 5
-    )
-    assert core.parse_start_args(["@a", "@b", "از", "امروز"], now=now)[3] == dt.datetime(2026, 10, 15)
-    assert core.parse_start_args(["@a", "@b", "از", "دیروز", "18:00"], now=now)[3] == dt.datetime(
-        2026, 10, 14, 18, 0
-    )
-    assert core.parse_start_args(["@a", "@b", "از", "10:30"], now=now)[3] == dt.datetime(2026, 10, 15, 10, 30)
+    assert p(["@a", "@b", "از", "۱۴۰۳/۰۵/۰۱"])[3] == dt.datetime(2024, 7, 22)
+    assert p(["@a", "@b", "از", "14030501"])[3] == dt.datetime(2024, 7, 22)
+    assert p(["@a", "@b", "از", "1403/05/01", "10:30"])[3] == dt.datetime(2024, 7, 22, 10, 30)
+    assert p(["@a", "@b", "از", "1403/05/01", "ساعت", "9:05"])[3] == dt.datetime(2024, 7, 22, 9, 5)
+    assert p(["@a", "@b", "از", "امروز"])[3] == dt.datetime(2026, 10, 15)
+    assert p(["@a", "@b", "از", "دیروز", "18:00"])[3] == dt.datetime(2026, 10, 14, 18, 0)
+    assert p(["@a", "@b", "از", "10:30"])[3] == dt.datetime(2026, 10, 15, 10, 30)
     # شماره‌ی پیامِ ۸ رقمی که تاریخِ معتبری نیست، همون شماره‌ی پیام می‌مونه
-    assert core.parse_start_args(["@a", "@b", "از", "12345678"]) == ("@a", "@b", 12345677, None, True)
+    assert p(["@a", "@b", "از", "12345678"]) == ("@a", "@b", 12345677, None, True, [("id", False)])
+    # «آدرس/شماره‌ی پیام»: اولِ کپی از همون شماره
+    assert p(["@src/500", "@dst"]) == ("@src", "@dst", 499, None, True, [("id", False)])
+    assert p(["t.me/durov/42", "@dst"]) == ("t.me/durov", "@dst", 41, None, True, [("id", False)])
+    # «از تاریخ» و «از شماره» با هم ← هر کدوم جدیدتر باشه ملاکه (marks گزارش می‌ده)
+    assert p(["@a", "@b", "از", "1403/05/01", "از", "900"]) == (
+        "@a", "@b", 899, dt.datetime(2024, 7, 22), True, [("date", True), ("id", False)]
+    )
+    assert p(["@a", "@b", "از", "900", "از", "1403/05/01"])[5] == [("id", False), ("date", True)]
     for bad in (
         ["@a"],
         ["@a", "@b", "@c"],
@@ -78,15 +84,78 @@ def test_parse_start_args():
         ["@a", "@b", "از", "x"],
         ["@a", "@b", "از", "1403/13/45"],          # تاریخِ نامعتبر
         ["@a", "@b", "از", "2024-13-01"],           # ماهِ نامعتبر
-        ["@a", "@b", "از", "1200", "از", "1403/05/01"],  # هم شماره هم تاریخ
-        ["@a", "@b", "از", "1403/05/01", "از", "1200"],
         ["@a", "@b", "از", "25:00"],                # ساعتِ نامعتبر
     ):
         try:
-            core.parse_start_args(bad)
+            p(bad)
         except ValueError:
             continue
         raise AssertionError(bad)
+
+
+def test_split_ref_and_labels():
+    assert core.split_ref("@ch/12345") == ("@ch", 12345)
+    assert core.split_ref("t.me/ch/9") == ("t.me/ch", 9)
+    assert core.split_ref("۱۴۰۳/۱۲") == ("1403", 12)  # ارقامِ فارسی هم اول به لاتین تبدیل می‌شن
+    # لینکِ کانالِ خصوصی: شناسه‌ی کانال دست‌نخورده، شماره‌ی پیامِ آخر جدا می‌شه
+    assert core.split_ref("t.me/c/1234567890") == ("t.me/c/1234567890", 0)
+    assert core.split_ref("t.me/c/1234567890/55") == ("t.me/c/1234567890", 55)
+    assert core.split_ref("@ch") == ("@ch", 0)
+    assert core.split_ref("https://t.me/c/1234567890/55") == ("https://t.me/c/1234567890", 55)
+    assert core.ref_label("folder:3") == "پوشه‌ی شماره 3"
+    assert core.ref_label("folder:0") == "چت‌های اصلی (بدونِ پوشه)"
+    assert core.ref_label("@ch") == "@ch"
+
+
+def test_extract_protected_links():
+    txt = ("سلام بچه‌ها، کانال جدیدمون: https://t.me/+AbCdEf123 و "
+           "پستِ خاص: t.me/c/1234567890/55 و کانالِ اصلی t.me/durov/7 نگاه کنید")
+    got = core.extract_protected_links(txt)
+    kinds = [g["kind"] for g in got]
+    assert kinds == ["invite", "private", "public"], got
+    assert got[0]["hash"] == "AbCdEf123"
+    assert got[0]["ref"] == "https://t.me/+AbCdEf123"
+    assert got[1]["message_id"] == 55 and got[1]["ref"] == "t.me/c/1234567890"
+    assert got[2]["ref"] == "@durov" and got[2]["message_id"] == 7
+    # joinchat، بدونِ اسکیم، و تکراری‌ها
+    got = core.extract_protected_links("t.me/joinchat/Xy-Z_1 و t.me/joinchat/Xy-Z_1")
+    assert len(got) == 1 and got[0]["kind"] == "invite" and got[0]["hash"] == "Xy-Z_1"
+    assert core.extract_protected_links("متنِ ساده بدونِ لینک") == []
+    assert core.extract_protected_links(None) == []
+    # لینکی که اسکیم نداره و یوزرنیمِ کوتاه/نامعتبره نباید کانال حساب بشه
+    assert core.extract_protected_links("t.me/+") == []
+    assert core.extract_protected_links("www.telegram.me/durov")[0]["ref"] == "@durov"
+
+
+class _Ent:
+    """شبیه‌سازِ Telethon MessageEntity (فقط offset/length/url و نامِ کلاس مهمه)."""
+
+    def __init__(self, offset: int, length: int, url: str = ""):
+        self.offset, self.length, self.url = offset, length, url
+
+
+class _TextUrl(_Ent):
+    """مثلِ MessageEntityTextUrl: آدرسِ واقعی جدا از متنِ نمایشی."""
+
+
+class _Url(_Ent):
+    """مثلِ MessageEntityUrl: خودِ متن آدرسه."""
+
+
+def test_extract_links_from_entities():
+    """اسمِ کانال به‌صورتِ لینک: متنِ نمایشی = اسم، آدرس = لینکِ دعوت."""
+    txt = "📢 کانالِ ویژه: اینجا کلیک کنید"
+    got = core.extract_protected_links(txt, [_TextUrl(15, 15, "https://t.me/+Secret99")])
+    assert got and got[0]["kind"] == "invite" and got[0]["hash"] == "Secret99"
+    assert got[0]["name"] == txt[15:30]
+    # لینکِ t.me/c که به‌صورتِ متنِ معمولی (MessageEntityUrl) اومده
+    url = "https://t.me/c/1234567890/55"
+    txt2 = f"ببین {url} رو"
+    got2 = core.extract_protected_links(txt2, [_Url(5, len(url), url)])
+    assert len(got2) == 1 and got2[0]["kind"] == "private" and got2[0]["message_id"] == 55
+    # چند لینکِ تکراری (هم entity هم متن) نباید دوبار بیان
+    got3 = core.extract_protected_links("t.me/durov/9", [_Ent(0, 13, "t.me/durov/9")])
+    assert len(got3) == 1
 
 
 def test_parse_date_and_time():
@@ -263,11 +332,18 @@ def test_format_status():
     txt = core.format_status(job, {"state": "مکث", "t0": 0, "copied0": 0, "now": 100})
     assert "#3" in txt and "26%" in txt and "زمانِ باقی‌مانده" in txt and "#77" in txt
     assert "شروع از تاریخ" not in txt  # بدونِ تاریخ، خطِ جدا نباید بیاد
+    assert "از این به بعد" not in txt
     # با تاریخِ شروع
     job["from_date"] = dt.datetime(2024, 7, 22, 10, 30)
     txt = core.format_status(job)
     assert "شروع از تاریخ: 1403/05/01 (2024/07/22) ساعت 10:30" in txt
     assert core.format_from_date(dt.datetime(2025, 3, 21)) == "1404/01/01 (2025/03/21)"
+    # حالتِ «از این به بعد» و کپیِ چندکاناله
+    job["watch"] = True
+    job["children"] = "11,12,13"
+    txt = core.format_status(job)
+    assert "از این به بعد" in txt and "۳ کانال" not in txt and "3 کانالِ مبدأ" in txt
+    assert core.STATUS_LABELS["watching"].startswith("از این به بعد")
 
 
 if __name__ == "__main__":
