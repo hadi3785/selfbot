@@ -444,6 +444,52 @@ async def main():
                          "مقصد" in out, f"{out[:110]!r}"))
     await drain()
 
+
+    # ۱۱) سناریویِ دومِ کاربر: پستی که به پیوی فوروارد شده و متنش لینکِ دعوتِ
+    #     خصوصی داره → نباید خطای داخلی بده و باید کاربر را راهنمایی کنه
+    await drain()
+    fake = new_fake({1234567890: 4, 7777777777: 4, 5555555555: 0, 4444444444: 0})
+    cc.client = fake
+    fake.invite_title = "اخبارِ خصوصی"     # اسمی که CheckChatInvite برمی‌گردونه
+    fake.forwarded.clear()
+    invite_txt = "عضویت در کانال: https://t.me/+AbCdEf123"
+    fwd_post = NS(id=4, peer_id=NS(channel_id=None, user_id=None),
+                  fwd_from=NS(channel_post=4, from_id=None, from_name="اخبارِ خصوصی"),
+                  message=invite_txt, entities=[], get_sender=None)
+    async def _no_sender():
+        raise ValueError("Cannot find the input entity")
+    fwd_post.get_sender = _no_sender
+    out = await run_cmd(fake, "شروع @my_dest", reply=fwd_post)
+    results.append(check("پستِ فورواردشده با لینکِ دعوت → بدونِ خطای داخلی",
+                         "❌" not in out and "خطا در پیدا کردنِ کانال" not in out, out))
+    results.append(check("همون پست → کانالِ هم‌نام از چت‌ها پیدا و کپی شروع می‌شود",
+                         "شروع شد" in out and len(fwd_post.__dict__) > 0, out[:90]))
+
+    # لینکِ دعوتی که کانالِ هم‌نام در چت‌ها نیست → پیامِ روشنِ «عضو شو»
+    await drain()
+    fake2 = new_fake({1234567890: 4, 7777777777: 4, 5555555555: 0, 4444444444: 0})
+    cc.client = fake2
+    fake2.invite_title = "کانالِ ناشناس"
+    out = await run_cmd(fake2, "شروع @my_dest", reply=fwd_post)
+    results.append(check("لینکِ دعوتِ ناشناس → پیامِ «اول باید عضوش باشی»",
+                         "عضوش باشی" in out and "❌" not in out, out))
+
+    # pستِ فورواردی که از_id داره و get_sender نمی‌ده → مبدأ از هدرِ فوروارد
+    await drain()
+    fake3 = new_fake({1234567890: 4, 7777777777: 4, 5555555555: 0, 4444444444: 0})
+    cc.client = fake3
+    fake3.forwarded.clear()
+    from telethon.tl.types import PeerChannel
+    fwd2 = NS(id=5, peer_id=NS(channel_id=None, user_id=None),
+              fwd_from=NS(channel_post=5, from_id=PeerChannel(1234567890), from_name="اخبارِ خصوصی"),
+              message="", entities=[], get_sender=None)
+    fwd2.get_sender = _no_sender
+    out = await run_cmd(fake3, "شروع @my_dest", reply=fwd2)
+    await wait_jobs()
+    results.append(check("مبدأ از هدرِ فوروارد (fwd_from.from_id) حل می‌شود",
+                         "شروع شد" in out and len(fake3.forwarded) == 4,
+                         f"{out[:80]!r} | {len(fake3.forwarded)}"))
+
     # ۹) مبدأ لینکِ دعوتِ خصوصی (بدونِ عضویت): باید پیامِ راهنما بده
     out = await run_cmd(fake, "شروع +AbCdEf123 مقصد")
     results.append(check("لینکِ دعوتِ خصوصی → راهنما (عضو شو یا ریپلای)",

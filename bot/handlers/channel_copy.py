@@ -776,7 +776,9 @@ async def _channel_from_reply(reply):
     """
     کانالِ مبدأ از پیامِ ریپلای‌شده:
       ۱) اگر خودِ پیام از یک کانال اومده (فوروارد) → همون کانال
-      ۲) وگرنه لینک‌های کانالی که توی متنِ پیام هست (مثلِ معرفیِ کانالِ بعدی)
+      ۲) وگرنه شناسه‌ی کانال از هدرِ فوروارد (`fwd_from.from_id`) — حتی اگه
+         `get_sender()` کار نکنه (پیوی/سشنِ تازه) این مسیر قطعی‌ست
+      ۳) وگرنه لینک‌های کانالی که توی متنِ پیام هست (مثلِ معرفیِ کانالِ بعدی)
     """
     if reply is None:
         return None
@@ -789,12 +791,24 @@ async def _channel_from_reply(reply):
         ent = None
     if _is_channel_like(ent):
         return ent
-    # متنِ پیام: ممکنه لینکِ کانال داخلش باشه
+    # هدرِ فوروارد: شناسه‌ی کانالِ مبدأ
+    fwd = getattr(reply, "fwd_from", None)
+    peer = getattr(fwd, "from_id", None) if fwd is not None else None
+    inner = getattr(peer, "channel_id", None) or getattr(peer, "chat_id", None)
+    if inner:
+        ent = await _resolve_source_by_id(int(f"-100{inner}")) or await _resolve_source_by_id(int(inner))
+        if ent is not None:
+            return ent
+    # متنِ پیام: ممکنه لینکِ کانال داخلش باشه (بدونِ هیچ اتصالی — فقط بررسی می‌کنیم)
     links = extract_protected_links(
         getattr(reply, "message", "") or "", getattr(reply, "entities", None)
     )
     if links:
-        found, _why = await _pick_source_by_link(links)
+        try:
+            found, _why = await _pick_source_by_link(links)
+        except Exception:
+            logger.warning("حلِ لینکِ داخلِ پیامِ ریپلای ناموفق بود", exc_info=True)
+            found = None
         if found is not None:
             return found
     return None
@@ -841,7 +855,18 @@ async def _resolve_start_pair(src_raw: str, dst_raw: str, reply):
             # مبدأ = همان کانالی که پستِ ریپلای‌شده ازش آمده (یا لینکِ داخلش)
             ent = await _channel_from_reply(reply)
             if ent is None:
-                return [], None, (
+                # اگه لینکِ دعوتِ کانالِ ناشناسی بود، دلیلش رو بگو
+                links = extract_protected_links(
+                    getattr(reply, "message", "") or "", getattr(reply, "entities", None)
+                )
+                reason = ""
+                if links:
+                    try:
+                        _f, why = await _pick_source_by_link(links)
+                        reason = why or ""
+                    except Exception:
+                        logger.debug("حلِ لینک برای پیامِ خطا ناموفق بود", exc_info=True)
+                return [], None, reason or (
                     "مبدأ پیدا نشد: روی یک پست از **کانالِ مبدأ** ریپلای کن، یا آدرسش را بده "
                     "(`.کپی‌کانال شروع @مبدأ @مقصد`)."
                 )
@@ -871,6 +896,16 @@ async def _resolve_start_pair(src_raw: str, dst_raw: str, reply):
             if fwd_ent is not None:
                 resolved.append((fwd_ent, ""))
                 continue
+            links = extract_protected_links(
+                getattr(reply, "message", "") or "", getattr(reply, "entities", None)
+            )
+            if links:
+                try:
+                    _f, why = await _pick_source_by_link(links)
+                    if why:
+                        return [], None, why
+                except Exception:
+                    logger.debug("حلِ لینک برای پیامِ خطا ناموفق بود", exc_info=True)
             return [], None, ref
         resolved.append((ent, ref))
 
@@ -935,31 +970,65 @@ async def _resolve_source_by_id(chat_id: int):
 async def _pick_source_by_link(links: list[dict]):
     """
     لینکِ کانال → entity، به ترتیبِ اولویت:
-      ۱) اگر لینکِ دعوت به کانالی باشه که پیداش کردیم (لیستِ چت‌ها)
-      ۲) t.me/c/<شناسه> → با اسکنِ لیستِ چت‌ها یا آیدی‌های عددی
-      ۳) t.me/<یوزرنیم>
-      ۴) لینکِ دعوت (بدونِ عضویت): فقط اسمش رو داریم → None برمی‌گرده ولی نام برمی‌گردونه
-    خروجی: (entity|None, وضعیتِ توضیحی)
+      ۱) t.me/c/<شناسه> → با اسکنِ لیستِ چت‌ها یا آیدی‌های عددی
+      ۲) t.me/<یوزرنیم>
+      ۳) لینکِ دعوت: اول اسمش خونده می‌شه و کانالِ هم‌نام توی چت‌های خودت
+         جستجو می‌شه (کاربر عملاً عضوش است)؛ وگرنه اسمش برگردانده می‌شه تا
+         به کاربر گفته بشه باید عضو بشه. هیچ‌وقت خطا پرت نمی‌کنه.
     """
     for it in links:
         kind, ref, mid = it["kind"], it["ref"], it["message_id"]
         if kind == "private":
             short = int(ref.split("/")[-1])
-            ent = await _find_by_protected_link(short) or await _find_channel_by_inner_id(short, int(f"-100{short}"))
+            ent = await _find_by_protected_link(short) or await _find_channel_by_inner_id(
+                short, int(f"-100{short}")
+            )
             if ent is not None:
                 return ent, f"از لینکِ خصوصی ({ref})"
         elif kind == "public":
-            ent = await _resolve(parse_chat_ref(ref), None, ref)
-            if ent is not None:
-                return ent, f"از لینک ({ref})"
-        else:  # invite — بدونِ عضو شدن فقط اسمش رو می‌شه دید
-            ent = await _resolve(parse_chat_ref(ref), None, ref)
-            if ent is not None:
-                return ent, f"از لینکِ دعوت ({ref})"
-            name = await _check_invite(it["hash"])
+            try:
+                parsed = parse_chat_ref(ref)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                ent = await _resolve(parsed, None, ref)
+                if ent is not None:
+                    return ent, f"از لینک ({ref})"
+        else:  # invite
+            # مهم: parse_chat_ref روی «+hash» خطا می‌ده؛ اینجا نباید پرت بشه
+            name = await _check_invite(it.get("hash") or "")
             if name:
-                return None, f"لینکِ دعوتِ «{name}» — اول باید عضوش باشی، بعد با ریپلای یا اسمِ ذخیره‌شده امتحان کن"
+                ent = await _find_channel_by_name(name)
+                if ent is not None:
+                    return ent, f"از لینکِ دعوتِ «{name}»"
+                return None, f"لینکِ دعوتِ «{name}» — اول باید عضوش باشی"
+            return None, f"لینکِ دعوتِ «{ref}» — اول باید عضوش باشی"
     return None, ""
+
+
+async def _find_channel_by_name(name: str, exact_first: bool = True):
+    """
+    کانال/گروه از روی «اسم» بینِ چت‌های خودت.
+    اول تطبیقِ دقیقِ نرمال‌شده، بعد تطبیقِ جزئی؛ اگه چند تا خورد و هیچ‌کدام دقیق نبود،
+    چیزی برنمی‌گردونه (بهتر از انتخابِ اشتباه).
+    """
+    want = _norm_search(name)
+    if not want:
+        return None
+    try:
+        found = await _search_targets("", limit=500)   # همه‌ی کانال/گروه‌های لیستِ چت‌ها
+    except Exception:
+        logger.debug("جستجویِ اسمیِ کانال ناموفق بود", exc_info=True)
+        return None
+    exact = [ent for ent, _pid, title in found if _norm_search(title) == want]
+    if exact:
+        return exact[0]
+    if not exact_first:
+        near = [ent for ent, _pid, title in found if want in _norm_search(title)]
+        if len(near) == 1:
+            return near[0]
+    near = [ent for ent, _pid, title in found if want in _norm_search(title)]
+    return near[0] if len(near) == 1 else None
 
 
 async def _source_from_anchor(anchor: str, reply=None):
@@ -1190,6 +1259,9 @@ async def channel_copy_handler(event):
                 pair = await _resolve_start_pair("__reply__", dst_raw, reply)
             else:
                 pair = await _resolve_start_pair(src_raw, dst_raw, reply)
+        except ValueError as e:
+            # ورودیِ نامعتبر (مثلاً لینکِ دعوت) → پیامِ روشن، نه «خطای داخلی»
+            return await msg.edit(f"⚠️ {e}")
         except Exception as e:
             logger.exception("خطا در resolve کردنِ کانال‌ها")
             return await msg.edit(f"❌ خطا در پیدا کردنِ کانال‌ها: {e}")
