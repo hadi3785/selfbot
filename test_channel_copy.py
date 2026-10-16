@@ -3,6 +3,7 @@
 اسکریپت تست کپی کانال - برای عیب‌یابی مشکلات
 """
 import asyncio
+import datetime as dt
 import sys
 import os
 
@@ -70,9 +71,10 @@ async def test_parsing():
     
     # تست parse_start_args
     test_args = [
-        (["@src", "@dst"], ("@src", "@dst", 0, True)),
-        (["@src", "@dst", "از", "100"], ("@src", "@dst", 99, True)),
-        (["@src", "@dst", "با‌نام"], ("@src", "@dst", 0, False)),
+        (["@src", "@dst"], ("@src", "@dst", 0, None, True)),
+        (["@src", "@dst", "از", "100"], ("@src", "@dst", 99, None, True)),
+        (["@src", "@dst", "با‌نام"], ("@src", "@dst", 0, None, False)),
+        (["@src", "@dst", "از", "1403/05/01"], ("@src", "@dst", 0, dt.datetime(2024, 7, 22), True)),
     ]
     
     for inp, expected in test_args:

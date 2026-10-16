@@ -44,16 +44,147 @@ def test_parse_chat_ref():
 
 
 def test_parse_start_args():
-    assert core.parse_start_args(["@a", "@b"]) == ("@a", "@b", 0, True)
-    assert core.parse_start_args(["@a", "@b", "از", "100"]) == ("@a", "@b", 99, True)
-    assert core.parse_start_args(["@a", "@b", "با‌نام"]) == ("@a", "@b", 0, False)
-    assert core.parse_start_args(["@a", "@b", "بانام", "from", "5"]) == ("@a", "@b", 4, False)
-    for bad in (["@a"], ["@a", "@b", "@c"], ["@a", "@b", "از"], ["@a", "@b", "از", "x"]):
+    now = dt.datetime(2026, 10, 15, 12, 0)
+    assert core.parse_start_args(["@a", "@b"]) == ("@a", "@b", 0, None, True)
+    assert core.parse_start_args(["@a", "@b", "از", "100"]) == ("@a", "@b", 99, None, True)
+    assert core.parse_start_args(["@a", "@b", "با‌نام"]) == ("@a", "@b", 0, None, False)
+    assert core.parse_start_args(["@a", "@b", "بانام", "from", "5"]) == ("@a", "@b", 4, None, False)
+    # شروع با تاریخ (بدونِ tz = به وقتِ کاربر)
+    assert core.parse_start_args(["@a", "@b", "از", "1403/05/01"]) == (
+        "@a", "@b", 0, dt.datetime(2024, 7, 22), True
+    )
+    assert core.parse_start_args(["@a", "@b", "از", "2024-08-22"]) == (
+        "@a", "@b", 0, dt.datetime(2024, 8, 22), True
+    )
+    assert core.parse_start_args(["@a", "@b", "از", "۱۴۰۳/۰۵/۰۱"])[3] == dt.datetime(2024, 7, 22)
+    assert core.parse_start_args(["@a", "@b", "از", "14030501"])[3] == dt.datetime(2024, 7, 22)
+    assert core.parse_start_args(["@a", "@b", "از", "1403/05/01", "10:30"])[3] == dt.datetime(
+        2024, 7, 22, 10, 30
+    )
+    assert core.parse_start_args(["@a", "@b", "از", "1403/05/01", "ساعت", "9:05"])[3] == dt.datetime(
+        2024, 7, 22, 9, 5
+    )
+    assert core.parse_start_args(["@a", "@b", "از", "امروز"], now=now)[3] == dt.datetime(2026, 10, 15)
+    assert core.parse_start_args(["@a", "@b", "از", "دیروز", "18:00"], now=now)[3] == dt.datetime(
+        2026, 10, 14, 18, 0
+    )
+    assert core.parse_start_args(["@a", "@b", "از", "10:30"], now=now)[3] == dt.datetime(2026, 10, 15, 10, 30)
+    # شماره‌ی پیامِ ۸ رقمی که تاریخِ معتبری نیست، همون شماره‌ی پیام می‌مونه
+    assert core.parse_start_args(["@a", "@b", "از", "12345678"]) == ("@a", "@b", 12345677, None, True)
+    for bad in (
+        ["@a"],
+        ["@a", "@b", "@c"],
+        ["@a", "@b", "از"],
+        ["@a", "@b", "از", "x"],
+        ["@a", "@b", "از", "1403/13/45"],          # تاریخِ نامعتبر
+        ["@a", "@b", "از", "2024-13-01"],           # ماهِ نامعتبر
+        ["@a", "@b", "از", "1200", "از", "1403/05/01"],  # هم شماره هم تاریخ
+        ["@a", "@b", "از", "1403/05/01", "از", "1200"],
+        ["@a", "@b", "از", "25:00"],                # ساعتِ نامعتبر
+    ):
         try:
             core.parse_start_args(bad)
         except ValueError:
             continue
         raise AssertionError(bad)
+
+
+def test_parse_date_and_time():
+    assert core.parse_date_arg("1403/05/01") == dt.date(2024, 7, 22)
+    assert core.parse_date_arg("1403-5-1") == dt.date(2024, 7, 22)
+    assert core.parse_date_arg("2024-08-22") == dt.date(2024, 8, 22)
+    assert core.parse_date_arg("۱۴۰۳/۰۵/۰۱") == dt.date(2024, 7, 22)
+    assert core.parse_date_arg("14030501") == dt.date(2024, 7, 22)
+    assert core.parse_date_arg("1404/01/01") == dt.date(2025, 3, 21)  # عیدِ ۱۴۰۴
+    assert core.parse_date_arg("1403/12/30") == dt.date(2025, 3, 20)  # اسفندِ کبیسه
+    # نه-تاریخ → None
+    for s in ("1200", "12345678", "abc", "2024", ""):
+        assert core.parse_date_arg(s) is None, s
+    # شبیهِ تاریخ ولی خراب → ValueError
+    for s in ("1403/13/45", "1403/07/31", "1404/12/30", "2024-13-01", "1403/12/31"):
+        try:
+            core.parse_date_arg(s)
+        except ValueError:
+            continue
+        raise AssertionError(s)
+    assert core.parse_time_arg("10:30") == (10, 30, 0)
+    assert core.parse_time_arg("9:05") == (9, 5, 0)
+    assert core.parse_time_arg("10:30:15") == (10, 30, 15)
+    assert core.parse_time_arg("1200") is None
+    try:
+        core.parse_time_arg("25:00")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("25:00 باید خطا بده")
+
+
+# ----------------------------------------------------- find_start_id ---
+EPOCH = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+
+
+def _dates(n, deleted=()):
+    return {i: EPOCH + dt.timedelta(hours=i) for i in range(1, n + 1) if i not in set(deleted)}
+
+
+def _find(dates, target, low=1, high=None, stats=None):
+    async def fetch(ids):
+        if stats is not None:
+            stats["reqs"] += 1
+            stats["max_chunk"] = max(stats["max_chunk"], len(ids))
+        return {i: dates[i] for i in ids if i in dates}
+
+    if high is None:
+        high = max(dates) if dates else 0
+    return asyncio.run(core.find_start_id(fetch, low, high, target))
+
+
+def _first(dates, target):
+    ids = sorted(i for i, d in dates.items() if d >= target)
+    return ids[0] if ids else None
+
+
+def test_find_start_id_basics():
+    d = _dates(2000)
+    assert _find(d, EPOCH + dt.timedelta(hours=500)) == 500          # دقیقاً رویِ تاریخِ پیام
+    assert _find(d, EPOCH + dt.timedelta(hours=500, seconds=30)) == 501  # وسطِ دو پیام
+    assert _find(d, EPOCH - dt.timedelta(days=1)) == 1               # قدیمی‌تر از همه
+    assert _find(d, EPOCH + dt.timedelta(hours=99999)) is None       # جدیدتر از همه
+    assert _find({}, EPOCH) is None                                  # کانالِ خالی
+    # پیامِ حذف‌شده دورِ مرز
+    dd = _dates(2000, deleted=range(480, 521))
+    assert _find(dd, EPOCH + dt.timedelta(hours=500)) == 521
+
+
+def test_find_start_id_never_skips():
+    """هیچ‌وقت نباید پیامِ تازه‌ای جا بمونه — حتی با پیامِ حذف‌شده‌ی زیاد."""
+    import random
+
+    random.seed(11)
+    for _ in range(150):
+        n = random.choice([200, 2000])
+        dates = _dates(n)
+        for _ in range(random.randint(0, 3)):  # چند بازه‌ی حذف‌شده
+            s = random.randint(1, n)
+            for i in range(s, min(n, s + random.randint(1, 400)) + 1):
+                dates.pop(i, None)
+        if not dates:
+            continue
+        target = EPOCH + dt.timedelta(hours=random.randint(1, n))
+        expected = _first(dates, target)
+        got = _find(dates, target)
+        if expected is None:
+            assert got is None, (n, target, got)
+        else:
+            assert got is not None and got <= expected, (n, target, expected, got)
+
+
+def test_find_start_id_budget():
+    """جستجو باید ارزون باشه: هر درخواست حداکثر ۹۹ شناسه."""
+    stats = {"reqs": 0, "max_chunk": 0}
+    assert _find(_dates(200000), EPOCH + dt.timedelta(hours=150000), stats=stats) == 150000
+    assert stats["max_chunk"] <= 99
+    assert stats["reqs"] <= 30, stats
 
 
 def test_batches_size_and_order():
@@ -127,10 +258,16 @@ def test_window():
 
 
 def test_format_status():
-    job = dict(id=3, source_title="A", dest_title="B", source_id=1, dest_id=2, status="running",
-               copied=50, skipped=2, total_hint=200, last_id=77, drop_author=True, last_error="")
+    job: dict = dict(id=3, source_title="A", dest_title="B", source_id=1, dest_id=2, status="running",
+                     copied=50, skipped=2, total_hint=200, last_id=77, drop_author=True, last_error="")
     txt = core.format_status(job, {"state": "مکث", "t0": 0, "copied0": 0, "now": 100})
     assert "#3" in txt and "26%" in txt and "زمانِ باقی‌مانده" in txt and "#77" in txt
+    assert "شروع از تاریخ" not in txt  # بدونِ تاریخ، خطِ جدا نباید بیاد
+    # با تاریخِ شروع
+    job["from_date"] = dt.datetime(2024, 7, 22, 10, 30)
+    txt = core.format_status(job)
+    assert "شروع از تاریخ: 1403/05/01 (2024/07/22) ساعت 10:30" in txt
+    assert core.format_from_date(dt.datetime(2025, 3, 21)) == "1404/01/01 (2025/03/21)"
 
 
 if __name__ == "__main__":

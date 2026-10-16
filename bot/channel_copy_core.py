@@ -1,6 +1,7 @@
 """هسته‌ی منطقیِ «کپی کانال» (`.کپی‌کانال`) — بدونِ وابستگی به Telethon/SQLAlchemy.
 
-همه‌ی منطقِ خالص (پارس ورودی، دسته‌بندیِ پیام‌ها با حفظِ آلبوم، طبقه‌بندیِ
+همه‌ی منطقِ خالص (پارس ورودی، پارسِ تاریخِ شمسی/میلادی، پیدا کردنِ اولین پیامِ
+یک تاریخ، دسته‌بندیِ پیام‌ها با حفظِ آلبوم، طبقه‌بندیِ
 خطاهای تلگرام، پنجره‌ی سقفِ روزانه، متنِ وضعیت) اینجاست تا بدونِ اتصال به
 تلگرام قابلِ تست باشه. خودِ ارسال/اتصال در handlers/channel_copy.py انجام می‌شه.
 
@@ -63,25 +64,192 @@ def parse_chat_ref(raw: str) -> tuple[str, Any]:
 
 _WITH_AUTHOR_FLAGS = {"با‌نام", "بانام", "با_نام", "withauthor", "with-author", "with_author", "نام"}
 _FROM_FLAGS = {"از", "from"}
+_TIME_KEYWORDS = {"ساعت", "وقت", "time", "at"}
+# «امروز/دیروز» نسبت به «الان» به وقتِ کاربر (یعنی now که صداکننده می‌ده)
+_RELATIVE_DATES = {"امروز": 0, "دیروز": -1, "پریروز": -2, "today": 0, "yesterday": -1}
 
 
-def parse_start_args(tokens: list[str]) -> tuple[str, str, int, bool]:
+def to_ascii_digits(s: str) -> str:
+    """ارقامِ فارسی/عربی (۱۴۰۳، ١٤٠٣) رو به لاتین تبدیل می‌کنه."""
+    return (s or "").translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+
+
+# تبدیلِ تقویم (همون الگوریتمِ bot/handlers/extras.py؛ اینجا کپیه چون این ماژول
+# باید بدونِ Telethon/SQLAlchemy هم لود بشه — تست‌ها مستقیم همین فایل رو می‌خونن)
+def gregorian_to_jalali(gy: int, gm: int, gd: int) -> tuple[int, int, int]:
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (
+        355666 + (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100)
+        + ((gy2 + 399) // 400) + gd + g_d_m[gm - 1]
+    )
+    jy = -1595 + (33 * (days // 12053))
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + (days // 31)
+        jd = 1 + (days % 31)
+    else:
+        jm = 7 + ((days - 186) // 30)
+        jd = 1 + ((days - 186) % 30)
+    return jy, jm, jd
+
+
+def jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
+    jy += 1595
+    days = (
+        -355668 + (365 * jy) + ((jy // 33) * 8) + (((jy % 33) + 3) // 4) + jd
+        + ((jm - 1) * 31 if jm < 7 else ((jm - 7) * 30 + 186))
+    )
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        days -= 1
+        gy += 100 * (days // 36524)
+        days %= 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    leap = (gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0)
+    sal_a = [0, 31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 0
+    for i in range(1, 13):
+        if gd <= sal_a[i]:
+            gm = i
+            break
+        gd -= sal_a[i]
+    return gy, gm, gd
+
+
+def _make_date(y: int, mo: int, d: int) -> dt.date:
+    """سالِ ۱۶۰۰ تا ۲۱۹۹ = میلادی • سالِ ۱۱۰۰ تا ۱۵۹۹ = شمسی."""
+    if 1600 <= y <= 2199:
+        try:
+            return dt.date(y, mo, d)
+        except ValueError:
+            raise ValueError(f"تاریخِ میلادیِ نامعتبره: {y}/{mo}/{d}")
+    if 1100 <= y <= 1599:
+        try:
+            gy, gm, gd = jalali_to_gregorian(y, mo, d)
+            if gregorian_to_jalali(gy, gm, gd) != (y, mo, d):
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"تاریخِ شمسیِ نامعتبره: {y}/{mo}/{d}")
+        return dt.date(gy, gm, gd)
+    raise ValueError(f"سالِ «{y}» نامعتبره (شمسی: ۱۱۰۰ تا ۱۵۹۹ • میلادی: ۱۶۰۰ تا ۲۱۹۹)")
+
+
+def parse_date_arg(raw: str) -> dt.date | None:
     """
-    ['@src', '@dst', 'از', '1200', 'با‌نام'] → (src_raw, dst_raw, from_id, drop_author)
+    «1403/05/01» یا «2024-08-22» یا «14030501» → تاریخِ میلادی (خروجیِ dt.date).
+    جداکننده‌ها: /  -  .  و ارقامِ فارسی هم قبوله (۱۴۰۳/۰۵/۰۱).
+    • None     یعنی اصلاً شبیهِ تاریخ نیست (مثلاً شماره‌ی پیامه)
+    • ValueError یعنی شبیهِ تاریخه ولی نامعتبره (مثلاً 1403/13/45)
+    """
+    s = to_ascii_digits((raw or "").strip())
+    m = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
+    if m:
+        return _make_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    if re.fullmatch(r"\d{8}", s):
+        try:
+            return _make_date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+        except ValueError:
+            return None  # به‌عنوانِ تاریخ درنیومد → پس شماره‌ی پیامه (مثلاً 12345678)
+    return None
+
+
+def parse_time_arg(raw: str) -> tuple[int, int, int] | None:
+    """«10:30» / «9:05» / «10:30:15» → (ساعت, دقیقه, ثانیه)؛ اگه ساعت نبود None."""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", to_ascii_digits((raw or "").strip()))
+    if not m:
+        return None
+    h, mi, se = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    if h > 23 or mi > 59 or se > 59:
+        raise ValueError(f"ساعتِ نامعتبره: {raw}")
+    return h, mi, se
+
+
+def parse_start_args(
+    tokens: list[str], *, now: dt.datetime | None = None
+) -> tuple[str, str, int, dt.datetime | None, bool]:
+    """
+    ['@src', '@dst', 'از', '1403/05/01'] → (src_raw, dst_raw, from_id, from_date, drop_author)
+
+    «از …» دو جور قبول می‌کنیم:
+      • شماره‌ی پیام: «از 1200» → from_id=1199 (min_id انحصاریه؛ خودِ ۱۲۰۰ هم کپی می‌شه)
+      • تاریخ: «از 1403/05/01»، «از 2024-08-22»، «از 14030501»، «از امروز»،
+        «از 10:30» (امروز از ساعت ۱۰:۳۰) + ساعتِ اختیاریِ بعدِ تاریخ
+        («از 1403/05/01 ساعت 10:30»)
+        → from_date: datetimeِ «بدونِ tz» به وقتِ کاربر؛ تبدیلِ به UTC با
+          TIMEZONE_OFFSET به عهده‌ی صداکننده‌ست.
+
     drop_author=True یعنی بدونِ برچسبِ «Forwarded from» (کپیِ تمیز - پیش‌فرض).
+    now: مبنا برای «امروز/دیروز» (بدونِ tz، به وقتِ کاربر).
     """
+    tokens = [to_ascii_digits(t) for t in tokens]
+    if now is None:
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
     refs: list[str] = []
     from_id = 0
+    from_date: dt.datetime | None = None
     drop_author = True
+    got_id = False
     i = 0
     while i < len(tokens):
         t = tokens[i]
         low = t.lower()
         if low in _FROM_FLAGS:
-            if i + 1 >= len(tokens) or not tokens[i + 1].isdigit():
-                raise ValueError("بعد از «از» باید شماره‌ی پیام بیاد (مثلاً: از 1200)")
-            from_id = max(int(tokens[i + 1]) - 1, 0)  # min_id انحصاریه؛ «از N» یعنی خودِ N هم کپی بشه
+            if i + 1 >= len(tokens):
+                raise ValueError("بعد از «از» باید تاریخ (مثل 1403/05/01) یا شماره‌ی پیام بیاد.")
+            val = tokens[i + 1]
             i += 2
+            if from_date is not None:
+                raise ValueError("دو بار «از …» زدی؛ فقط یکی رو مشخص کن (تاریخ یا شماره‌ی پیام).")
+
+            day: dt.date | None = None
+            hh = mm = ss = 0
+            rel = _RELATIVE_DATES.get(val.lower())
+            if rel is not None:
+                day = (now + dt.timedelta(days=rel)).date()
+            else:
+                day = parse_date_arg(val)  # ممکنه ValueError بده (تاریخِ نامعتبر)
+                if day is None:
+                    t_only = parse_time_arg(val)
+                    if t_only is not None:  # «از 10:30» → امروز از ساعتِ ۱۰:۳۰
+                        hh, mm, ss = t_only
+                        day = now.date()
+                    elif val.isdigit():
+                        if got_id:
+                            raise ValueError("دو بار «از …» زدی؛ فقط یکی رو مشخص کن.")
+                        from_id = max(int(val) - 1, 0)  # min_id انحصاریه؛ «از N» یعنی خودِ N هم کپی بشه
+                        got_id = True
+                        continue
+                    else:
+                        raise ValueError(
+                            f"«{val}» نه تاریخِ معتبریه نه شماره‌ی پیام. "
+                            "مثال: از 1403/05/01 | از 2024-08-22 | از 1200 | از امروز"
+                        )
+            # ساعتِ اختیاری بعدِ تاریخ: «10:30» یا «ساعت 10:30»
+            if i < len(tokens) and tokens[i].lower() in _TIME_KEYWORDS:
+                i += 1
+            if i < len(tokens):
+                t_only = parse_time_arg(tokens[i])
+                if t_only is not None:
+                    hh, mm, ss = t_only
+                    i += 1
+            if got_id:
+                raise ValueError("هم شماره‌ی پیام و هم تاریخ دادی؛ فقط یکی رو مشخص کن.")
+            from_date = dt.datetime(day.year, day.month, day.day, hh, mm, ss)
             continue
         if low in _WITH_AUTHOR_FLAGS:
             drop_author = False
@@ -91,7 +259,7 @@ def parse_start_args(tokens: list[str]) -> tuple[str, str, int, bool]:
         i += 1
     if len(refs) != 2:
         raise ValueError("باید دقیقاً دو آدرس بدی: مبدأ و مقصد")
-    return refs[0], refs[1], from_id, drop_author
+    return refs[0], refs[1], from_id, from_date, drop_author
 
 
 # ---------------------------------------------------------- batching ---
@@ -162,6 +330,139 @@ async def iter_batches(messages: AsyncIterator[Any], batch_size: int) -> AsyncIt
         yield b
     if cur.ids or cur.skipped:
         yield cur
+
+
+# --------------------------------------------------- پیدا کردنِ تاریخ ---
+_PROBE_RADIUS = 32      # شعاعِ اولیه‌ی گشتنِ اطرافِ یک شناسه
+_PROBE_RADIUS_MAX = 160  # حداکثرِ شعاعِ اگه اول چیزی پیدا نشد
+_ID_CHUNK = 99          # حداکثرِ شناسه در هر fetch (تلگرام سقفِ ۱۰۰ داره)
+
+
+def _as_utc(d: dt.datetime) -> dt.datetime:
+    if d.tzinfo is None:
+        return d.replace(tzinfo=dt.timezone.utc)
+    return d.astimezone(dt.timezone.utc)
+
+
+async def _probe(fetch, idx: int, low: int, high: int) -> tuple[int, dt.datetime] | None:
+    """نزدیک‌ترین پیامِ *موجود* به شناسه‌ی idx داخلِ بازه‌ی [low, high] + تاریخش."""
+    r = _PROBE_RADIUS
+    while True:
+        a, b = max(low, idx - r), min(high, idx + r)
+        found = await fetch(list(range(a, b + 1)))
+        if found:
+            near = min(found, key=lambda i: (abs(i - idx), i))
+            return near, _as_utc(found[near])
+        if r >= _PROBE_RADIUS_MAX:
+            return None
+        r *= 5
+
+
+async def _probe_from_top(fetch, low: int, high: int) -> tuple[int, dt.datetime] | None:
+    """نزدیک‌ترین پیامِ موجود به «بالایِ بازه» — اگه اطرافش حذف شده بود، تکه‌تکه به پایین."""
+    hi = await _probe(fetch, high, low, high)
+    if hi is not None:
+        return hi
+    cur = high
+    for _ in range(20):  # حداکثرِ ~۲۰۰۰ شناسه پایین‌تر، فقط برایِ حالتِ خیلی عجیب
+        start = max(low, cur - _ID_CHUNK + 1)
+        got = await fetch(list(range(start, cur + 1)))
+        if got:
+            near = max(got)
+            return near, _as_utc(got[near])
+        if start <= low:
+            break
+        cur = start - 1
+    return None
+
+
+async def _expand_around(fetch, mid: int, low: int, high: int, max_ids: int = 1980):
+    """
+    بازه‌ی «کاملِ پوشش‌داده‌شده»‌ی [a, b] دورِ mid که حداقل یک پیامِ موجود توش هست
+    (یا اگه تا بودجه هیچی نبود، همون بازه‌ی بزرگ‌شده‌ی خالی). خروجی: (found, a, b)
+    """
+    a = max(low + 1, mid - _ID_CHUNK // 2)
+    b = min(high - 1, mid + _ID_CHUNK // 2)
+    found: dict[int, dt.datetime] = {}
+    spent = 0
+    while spent < max_ids:
+        na = max(low + 1, a - _ID_CHUNK)
+        nb = min(high - 1, b + _ID_CHUNK)
+        if na == a and nb == b:
+            break
+        for ids in (list(range(na, a)), list(range(b + 1, nb + 1))):
+            if not ids:
+                continue
+            got = await fetch(ids)
+            found.update(got)
+            spent += len(ids)
+        a, b = na, nb
+        if found:
+            break
+    return found, a, b
+
+
+async def find_start_id(fetch, low: int, high: int, target: dt.datetime) -> int | None:
+    """
+    اولین شناسه‌ی پیامی که تاریخش >= target است (جستجوی دودویی رویِ شناسه‌ها).
+
+    fetch: کال‌بکِ async با امضای `fetch(ids: list[int]) -> dict[int, dt.datetime]`
+           که فقط پیام‌های موجود رو برمی‌گردونه (پیامِ حذف‌شده اصلاً توش نیست).
+    خروجی: شناسه‌ی شروع — صداکننده باید `last_id = خروجی - 1` بذاره
+           (چون iter_messages با min_id انحصاریه) — یا None اگه از این تاریخ
+           پیامی توی کانال نباشه.
+
+    تقریباً ~log2(بازه) درخواست (۲۰-۲۵ تا برای کانالِ میلیونی)؛ هر درخواست
+    حداکثرِ ۹۹ شناسه. اگه پیام‌هایِ اطرافِ یک شناسه حذف‌شده باشن، دورش رو
+    (حداکثرِ ~۲۰۰۰ شناسه) می‌گردیم تا مرز دقیق پیدا بشه.
+
+    قاعده‌ی ایمنی: هر جا ابهام باشه (پیامِ حذف‌شده و ...) مرز رو طوری جلو
+    می‌بریم که ***هیچ پیامِ تازه‌ای جا نمونه***؛ برعکسش ممکنه چند پیامِ
+    قدیمی‌ترِ اضافه کپی بشه (فقط توی کانالِ پُر از پیامِ حذف‌شده).
+    """
+    target = _as_utc(target)
+    if high <= low:
+        return None
+
+    hi = await _probe_from_top(fetch, low, high)
+    if hi is None or hi[1] < target:
+        return None  # آخرین پیام هم از تاریخِ خواسته‌شده قدیمی‌تره (یا کانال خالیه)
+
+    lo = await _probe(fetch, low, low, high)
+    if lo is not None and lo[1] >= target:
+        return lo[0]  # خودِ ابتدایِ کانال هم از این تاریخ به بعدِ
+
+    # L: بالایِ بازه‌ی جستجو که «قطعاً» بالاتر از اون نیست (F > L) • U: تازه (F <= U)
+    L = lo[0] if lo is not None else low
+    U = hi[0]
+    while U - L > 1:
+        mid = (L + U) // 2
+        a = max(L + 1, mid - _ID_CHUNK // 2)
+        b = min(U - 1, mid + _ID_CHUNK // 2)
+        found = await fetch(list(range(a, b + 1)))
+        for attempt in range(2):
+            news = sorted(i for i, d in found.items() if _as_utc(d) >= target)
+            olds = sorted(i for i, d in found.items() if _as_utc(d) < target)
+            if news:
+                U = news[0]  # اولین پیامِ تازه‌ی دیده‌شده (همیشه < U چون بازه clip شده)
+                if olds:
+                    L = max(L, olds[-1])
+                break
+            if olds and olds[-1] > L:
+                L = olds[-1]  # اینا قطعاً قدیمی‌ان؛ تازه‌ها بالاترن
+                break
+            if a <= L + 1:
+                # بازه از درستِ بالایِ L شروع شده، کامل دیده شده و تازه‌ای توش نبود
+                L = b
+                break
+            if attempt == 0:
+                # کلِ بازه حذف‌شده‌ست → دورِ mid رو گسترش بده تا پیامی پیدا بشه
+                found, a, b = await _expand_around(fetch, mid, L, U)
+                continue
+            # بودجه‌ی گسترش تموم شد → محافظه‌کارانه مرزِ بالا رو عقب می‌بریم
+            # (ممکنه چند پیامِ قدیمی‌ترِ اضافه کپی بشه؛ پیامِ تازه جا نمی‌مونه)
+            U = a
+    return U
 
 
 # ------------------------------------------------------ error classes ---
@@ -265,6 +566,23 @@ def _fmt_duration(seconds: float) -> str:
     return f"{s} ثانیه"
 
 
+def format_from_date(fd: dt.datetime) -> str:
+    """
+    تاریخِ شروعِ خواسته‌شده (بدونِ tz، به وقتِ کاربر) →
+    «1403/05/01 (2024/08/22)» یا با ساعت: «1403/05/01 (2024/08/22) ساعت 10:30»
+    """
+    if fd.tzinfo is not None:
+        fd = fd.replace(tzinfo=None)
+    jy, jm, jd = gregorian_to_jalali(fd.year, fd.month, fd.day)
+    out = f"{jy:04d}/{jm:02d}/{jd:02d} ({fd.year:04d}/{fd.month:02d}/{fd.day:02d})"
+    if (fd.hour, fd.minute, fd.second) != (0, 0, 0):
+        t = f"{fd.hour:02d}:{fd.minute:02d}"
+        if fd.second:
+            t += f":{fd.second:02d}"
+        out += f" ساعت {t}"
+    return out
+
+
 def format_status(job: dict, live: dict | None = None) -> str:
     live = live or {}
     copied, skipped, total = job["copied"], job["skipped"], job.get("total_hint", 0)
@@ -274,6 +592,8 @@ def format_status(job: dict, live: dict | None = None) -> str:
         f"• مقصد: {job['dest_title'] or job['dest_id']}",
         f"• وضعیت: {STATUS_LABELS.get(job['status'], job['status'])}",
     ]
+    if job.get("from_date"):
+        lines.append(f"• شروع از تاریخ: {format_from_date(job['from_date'])}")
     if total > 0:
         pct = min(int((copied + skipped) * 100 / total), 100)
         lines.append(f"• پیشرفت: {copied} کپی‌شده از حدودِ {total} ({pct}%)")

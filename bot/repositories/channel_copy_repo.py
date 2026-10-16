@@ -24,6 +24,7 @@ def _to_dict(r: ChannelCopyJob) -> dict:
         "drop_author": r.drop_author,
         "window_start": r.window_start,
         "window_count": r.window_count,
+        "from_date": r.from_date,
         "last_error": r.last_error,
     }
 
@@ -39,6 +40,7 @@ async def create_job(
     last_id: int = 0,
     total_hint: int = 0,
     drop_author: bool = True,
+    from_date: dt.datetime | None = None,
 ) -> dict:
     async with session_scope() as session:
         obj = ChannelCopyJob(
@@ -51,6 +53,7 @@ async def create_job(
             last_id=last_id,
             total_hint=total_hint,
             drop_author=drop_author,
+            from_date=from_date,
             status="running",
         )
         session.add(obj)

@@ -472,6 +472,8 @@ class ChannelCopyJob(Base):
     # پنجره‌ی ۲۴ساعته‌ی سقفِ روزانه
     window_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     window_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # تاریخِ شروعِ خواسته‌شده («از 1403/05/01»): datetimeِ بدونِ tz به وقتِ کاربر — فقط برایِ نمایش
+    from_date: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

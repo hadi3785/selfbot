@@ -3,6 +3,8 @@
 مثال‌ها:
   .کپی‌کانال شروع @مبدا @مقصد            (از اولین پست؛ بدونِ برچسبِ Forwarded from)
   .کپی‌کانال شروع @مبدا @مقصد از 1200    (از پیامِ شماره‌ی 1200 به بعد)
+  .کپی‌کانال شروع @مبدا @مقصد از 1403/05/01   (از تاریخِ شمسی به بعد — میلادی هم می‌شه)
+  .کپی‌کانال شروع @مبدا @مقصد از امروز    (امروز/دیروز/پریروز + ساعتِ اختیاری)
   .کپی‌کانال شروع @مبدا @مقصد با‌نام      (با نامِ کانالِ مبدأ)
   .کپی‌کانال وضعیت / توقف / ادامه / لیست / حذف 3
 
@@ -25,6 +27,8 @@ from .. import config
 from ..channel_copy_core import (
     check_window,
     classify_error,
+    find_start_id,
+    format_from_date,
     format_status,
     iter_batches,
     parse_chat_ref,
@@ -48,6 +52,9 @@ USAGE = (
     "📦 **کپی کانال**\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد` — از اولین پست\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد از 1200` — از پیامِ 1200 به بعد\n"
+    f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد از 1403/05/01` — از تاریخِ شمسی به بعد\n"
+    f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد از 2024-08-22 ساعت 10:30` — تاریخِ میلادی + ساعت\n"
+    f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد از امروز` — امروز / دیروز / پریروز\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مبدا @مقصد با‌نام` — با برچسبِ Forwarded from\n"
     f"`{config.PREFIX}کپی‌کانال وضعیت` | `توقف` | `ادامه [شماره]` | `لیست` | `حذف <شماره>`\n\n"
     "• مقصد باید کانالی باشه که توش ادمین (با دسترسیِ انتشار) هستی.\n"
@@ -169,6 +176,58 @@ async def _validate_pair(src, dst) -> str | None:
 
 
 # ------------------------------------------------------------- forward ---
+async def _fetch_dates(src, ids: list[int]) -> dict[int, dt.datetime]:
+    """
+    شناسه‌ها → تاریخشون (فقطِ پیام‌های موجود)؛ برای پیدا کردنِ مرزِ تاریخ.
+    هر درخواست حداکثرِ ۱۰۰ شناسه (سقفِ channels.getMessages) + صبرِ احتمالی روی FloodWait.
+    """
+    out: dict[int, dt.datetime] = {}
+    ids = [i for i in dict.fromkeys(int(x) for x in ids) if i > 0]
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
+        res = None
+        for attempt in range(3):
+            try:
+                res = await asyncio.wait_for(client.get_messages(src, ids=chunk), timeout=45)
+                break
+            except asyncio.TimeoutError:
+                logger.warning("get_messages(ids) timeout شد (تلاش %s)", attempt + 1)
+                continue
+            except Exception as e:
+                kind, val = classify_error(e)
+                if kind == "wait":
+                    logger.info("کپی‌کانال: تلگرام %s ثانیه صبر خواست (خوندنِ تاریخ‌ها)", val)
+                    await asyncio.sleep(val + 1)
+                    continue
+                if kind == "fatal":
+                    raise
+                logger.warning("get_messages(ids) خطا: %r", e)
+                await asyncio.sleep(2)
+        if res is None:
+            continue
+        for m in res:
+            if m is None:
+                continue
+            mid, d = getattr(m, "id", None), getattr(m, "date", None)
+            if mid and d is not None:
+                out[int(mid)] = d
+        await asyncio.sleep(0.3)  # ملایم با تلگرام؛ کلِ جستجو چند ثانیه بیشتر طول نمی‌کشه
+    return out
+
+
+async def _start_id_by_date(src, from_date: dt.datetime) -> int | None:
+    """اولین شناسه‌ی پیامِ «از تاریخِ خواسته‌شده به بعد» — یا None."""
+    # از وقتِ کاربر (بدونِ tz) به UTC — پیام‌های تلگرام UTC هستن
+    target = (from_date - dt.timedelta(hours=config.TIMEZONE_OFFSET)).replace(tzinfo=dt.timezone.utc)
+    try:
+        latest = list(await asyncio.wait_for(client.get_messages(src, limit=1), timeout=30))
+    except Exception:
+        logger.warning("گرفتنِ آخرین پیامِ مبدأ ناموفق بود", exc_info=True)
+        latest = []
+    high = int(latest[0].id) if latest else 0
+    return await find_start_id(lambda ids: _fetch_dates(src, ids), 1, high, target)
+
+
 async def _do_forward(dst, src, ids: list[int], drop_author: bool):
     kwargs = {"from_peer": src, "silent": True}
     if drop_author:
@@ -413,7 +472,7 @@ async def channel_copy_handler(event):
     else:
         tokens_for_start = tokens
     try:
-        src_raw, dst_raw, from_id, drop_author = parse_start_args(tokens_for_start)
+        src_raw, dst_raw, from_id, from_date, drop_author = parse_start_args(list(tokens_for_start))
         src_ref, dst_ref = parse_chat_ref(src_raw), parse_chat_ref(dst_raw)
     except ValueError as e:
         return await event.edit(f"⚠️ {e}\n\n{USAGE}")
@@ -456,10 +515,38 @@ async def channel_copy_handler(event):
     except Exception:
         logger.debug("total شمارش نشد", exc_info=True)
 
+    start_note = ""
+    if from_date is not None:
+        await msg.edit(
+            f"🔎 دارم اولین پیامِ **{format_from_date(from_date)}** رو توی کانالِ مبدأ پیدا می‌کنم… (تا یک دقیقه)"
+        )
+        try:
+            start_id = await _start_id_by_date(src, from_date)
+        except Exception as e:
+            logger.exception("خطا در پیدا کردنِ مرزِ تاریخ")
+            return await msg.edit(f"❌ خطا در پیدا کردنِ پیام‌هایِ این تاریخ: {e}")
+        if not start_id:
+            return await msg.edit(
+                "⚠️ از تاریخِ خواسته‌شده هیچ پیامی توی کانالِ مبدأ پیدا نشد "
+                "(تاریخ از آخرین پیام جدیدتره یا کانال خالیه)."
+            )
+        from_id = max(int(start_id) - 1, 0)
+        start_note = f"• شروع از تاریخ: {format_from_date(from_date)} (از پیامِ #{start_id})\n"
+        # درصدِ پیشرفت: پیام‌هایِ قبلِ این تاریخ رو از کلِ کانال کم می‌کنیم
+        if total > 0:
+            try:
+                before = int(
+                    getattr(await client.get_messages(src, max_id=start_id, limit=0), "total", 0) or 0
+                )
+                if 0 <= before < total:
+                    total -= before
+            except Exception:
+                logger.debug("شمارشِ پیام‌هایِ قبل از تاریخ نشد", exc_info=True)
+
     job = await repo.create_job(
         source_id=tl_utils.get_peer_id(src), source_title=_title(src), source_ref=src_raw,
         dest_id=tl_utils.get_peer_id(dst), dest_title=_title(dst), dest_ref=dst_raw,
-        last_id=from_id, total_hint=total, drop_author=drop_author,
+        last_id=from_id, total_hint=total, drop_author=drop_author, from_date=from_date,
     )
     _spawn(job["id"])
 
@@ -468,6 +555,7 @@ async def channel_copy_handler(event):
     cap = f"سقفِ روزانه {limit} پیام" if limit else "بدونِ سقفِ روزانه"
     await event.edit(
         f"▶️ کپی کانال #{job['id']} شروع شد\n"
+        + start_note +
         f"• {_title(src)} → {_title(dst)}\n"
         f"• دسته‌های {config.CHANNEL_COPY_BATCH_SIZE}تایی، مکثِ {int(config.CHANNEL_COPY_DELAY_SECONDS)} ثانیه "
         f"(حداکثر ~{per_hour} پیام در ساعت؛ {cap})\n"
