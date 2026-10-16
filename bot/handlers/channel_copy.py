@@ -76,7 +76,8 @@ USAGE = (
     f"`{config.PREFIX}کپی‌کانال شروع` + **ریپلای** روی پیامِ همون کانال → مبدأ همون کانال می‌شه\n"
     f"`{config.PREFIX}کپی‌کانال شروع @مقصد` + ریپلای → ‌آدرسِ داده‌شده مقصده و مبدأ از پستِ ریپلای‌شده\n"
     f"`{config.PREFIX}کپی‌کانال پوشه‌ها` — لیستِ پوشه‌ها و شماره‌شون\n\n"
-    f"`{config.PREFIX}کپی‌کانال وضعیت` | `توقف` | `ادامه [شماره]` | `لیست` | `حذف <شماره>`\n\n"
+    f"`{config.PREFIX}کپی‌کانال وضعیت [شماره]` | `توقف [شماره]` | `ادامه [شماره]` | `لیست` | `حذف <شماره>`\n"
+    "• «ادامه» روی کارِ تمام‌شده = فقط پست‌های تازه‌ی بعد از آخرین کپی‌شده (بدونِ تکرار).\n\n"
     "• مقصد باید کانالی باشه که توش ادمین (با دسترسیِ انتشار) هستی.\n"
     "• کانال‌های با «محتوای محافظت‌شده» کپی نمی‌شن."
 )
@@ -1178,7 +1179,12 @@ async def channel_copy_handler(event):
         return await event.edit("\n".join(lines))
 
     if sub in ("توقف", "stop"):
-        jid = _running_id()
+        if rest and rest[0].isdigit():
+            jid = int(rest[0])
+            if jid not in _TASKS:
+                return await event.edit(f"کار #{jid} الان در حالِ اجرا نیست.")
+        else:
+            jid = _running_id()
         if jid is None:
             return await event.edit("کارِ فعالی نیست.")
         _STOP[jid].set()
@@ -1194,19 +1200,54 @@ async def channel_copy_handler(event):
         return await event.edit("🗑 حذف شد." if ok else "کاری با این شماره نیست.")
 
     if sub in ("ادامه", "resume"):
-        if _running_id() is not None:
-            return await event.edit("یک کپی در حالِ اجراست؛ همزمان فقط یکی مجازه.")
         if rest and rest[0].isdigit():
             job = await repo.get_job(int(rest[0]))
         else:
             job = await repo.get_latest_job()
         if not job:
             return await event.edit("کاری برای ادامه پیدا نشد.")
-        if job["status"] == "done":
-            return await event.edit("این کار قبلاً تموم شده.")
+
+        busy = _running_id()
+        if busy is not None and busy != job["id"]:
+            return await event.edit("یک کپی در حالِ اجراست؛ همزمان فقط یکی مجازه (وضعیت/توقف).")
+
+        # کارِ گروهی (چند کانال/پوشه): خودش کپی نمی‌کنه؛ بچه‌ها رو ادامه می‌ده
+        if job.get("children"):
+            kids = await repo.list_children(job["id"])
+            pending = [k for k in kids if k["status"] != "watching"]
+            if not pending:
+                return await event.edit(
+                    f"کار #{job['id']} در حالتِ «از این به بعد» فعاله و پیام‌های تازه رو خودش می‌گیره."
+                )
+            for k in pending:
+                await repo.set_status(k["id"], "running", "")
+                _spawn(k["id"])
+            if job["status"] not in ("running",) or job["id"] not in _TASKS:
+                await repo.set_status(job["id"], "running", "")
+                _spawn_coordinator(job["id"])
+            return await event.edit(
+                f"▶️ کار #{job['id']}: {len(pending)} کانال از پیامِ آخرشون به بعد ادامه می‌دن "
+                f"(پیام‌های تازه هم کپی می‌شن)."
+            )
+
+        if job["status"] == "watching" and job["id"] in _TASKS:
+            return await event.edit(
+                f"👀 کار #{job['id']} از قبل در حالتِ «از این به بعد» فعاله و پیام‌های تازه رو "
+                f"خودکار کپی می‌کنه (هر {int(config.CHANNEL_COPY_WATCH_SECONDS)} ثانیه چک می‌شه)."
+            )
+
+        # کپیِ تمام‌شده/متوقف‌شده → از پیامِ آخرش به بعد؛ یعنی فقط پست‌های تازه
         await repo.set_status(job["id"], "running", "")
         _spawn(job["id"])
-        return await event.edit(f"▶️ کار #{job['id']} از پیامِ #{job['last_id']} ادامه پیدا کرد.")
+        tail = (
+            "پیام‌های تازه‌ی بعدش کپی می‌شن"
+            if job["status"] == "done"
+            else "ادامه‌ی کپی از همون‌جا"
+        )
+        return await event.edit(
+            f"▶️ کار #{job['id']} از پیامِ #{job['last_id'] + 1} به بعد ادامه پیدا کرد ({tail}).\n"
+            f"• پیشرفت: `{config.PREFIX}کپی‌کانال وضعیت {job['id']}`"
+        )
 
     # ---------------------------------------------------------------- شروع ---
     watch = False

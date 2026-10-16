@@ -490,6 +490,57 @@ async def main():
                          "شروع شد" in out and len(fake3.forwarded) == 4,
                          f"{out[:80]!r} | {len(fake3.forwarded)}"))
 
+
+    # ۱۲) «ادامه» روی کارِ تمام‌شده: فقط پست‌های تازه‌ی بعدی کپی می‌شن
+    await drain()
+    fake = new_fake({1234567890: 5, 7777777777: 5, 5555555555: 0, 4444444444: 0})
+    cc.client = fake
+    fake.forwarded.clear()
+    out = await run_cmd(fake, "شروع اخبار مهم مقصد")
+    await wait_jobs()
+    n1 = len(fake.forwarded)
+    job = (await repo.list_jobs(1))[0]
+    done = await repo.get_job(job["id"])
+    results.append(check("کپیِ اولیه تمام شد و last_id ثبت شد",
+                         done["status"] == "done" and done["last_id"] == 5 and n1 == 5,
+                         f"{done['status']} last={done['last_id']} n={n1}"))
+
+    # حالا مبدأ دو پستِ تازه می‌ذاره
+    fake.forwarded.clear()
+    fake.sizes[1234567890] = 7
+    out = await run_cmd(fake, f"ادامه {job['id']}")
+    await wait_jobs()
+    ids = sorted(i for _, i in fake.forwarded)
+    results.append(check("«ادامه N» روی کارِ تمام‌شده فقط پست‌های تازه را کپی می‌کند",
+                         ids == [6, 7], f"{out[:70]!r} | {ids}"))
+    results.append(check("از ادامه‌دادن هم ۰ پیامِ تکراری کپی نشد", 1 not in ids and 5 not in ids, ids))
+    after = await repo.get_job(job["id"])
+    results.append(check("پیشرفتِ کار تجمعی ماند (copied=7)", after["copied"] == 7, after["copied"]))
+    out2 = await run_cmd(fake, f"ادامه {job['id']}")
+    await wait_jobs()
+    results.append(check("«ادامه» دوباره بدونِ پستِ تازه → ۰ کپی", len(fake.forwarded) == 2, len(fake.forwarded)))
+
+    # همین رفتار برای کارِ گروهی: ادامه‌دادن همه‌ی بچه‌ها
+    fake.forwarded.clear()
+    out = await run_cmd(fake, "شروع اخبار مهم,@public_news مقصد")
+    await wait_jobs()
+    parent = next((j for j in await repo.list_jobs(3) if j["children"]), None)
+    results.append(check("کارِ گروهی ساخته شد", parent is not None))
+    fake.forwarded.clear()
+    fake.sizes[1234567890] = 9
+    fake.sizes[7777777777] = 8
+    out = await run_cmd(fake, f"ادامه {parent['id']}")
+    await wait_jobs()
+    ids = sorted(i for _d, i in fake.forwarded)
+    # اخبار: ۸ و ۹ (last_id=7 بود) • عمومی: ۶ و ۷ و ۸ (last_id=5 بود) → ۵ پیام، بدونِ تکرار برای هر مبدأ
+    results.append(check("«ادامه» روی کارِ گروهی، فقط پست‌های تازه‌ی هر دو کانال را کپی می‌کند",
+                         len(ids) == 5 and sorted(set(ids)) == [6, 7, 8, 9] and ids.count(8) == 2,
+                         f"{out[:60]!r} | {ids}"))
+    kids = await repo.list_children(parent["id"])
+    results.append(check("پیشرفتِ بچه‌ها تجمعی ماند (۹ و ۸)",
+                         sorted(k["copied"] for k in kids) == [8, 9],
+                         [(k["source_title"], k["copied"], k["last_id"]) for k in kids]))
+
     # ۹) مبدأ لینکِ دعوتِ خصوصی (بدونِ عضویت): باید پیامِ راهنما بده
     out = await run_cmd(fake, "شروع +AbCdEf123 مقصد")
     results.append(check("لینکِ دعوتِ خصوصی → راهنما (عضو شو یا ریپلای)",
